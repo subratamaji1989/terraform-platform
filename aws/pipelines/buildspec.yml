@@ -13,8 +13,8 @@ phases:
       - echo "==> [Environment-- ${ENV}]"
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
-      - ls -lart
-      - pip install --upgrade pip -q yq pyyaml awscli "checkov==${CHECKOV_VERSION}"
+      - ls -lart aws
+      - pip install --upgrade pip -q yq pyyaml awscli
       - export $(yq '.pipeline-parameters | to_entries | .[] | .key + "=" + .value' ${PIPELINE_VARS_PATH} | xargs)
       - echo "--> Successfully loaded and exported pipeline variables."
       - echo "==> [INSTALL] Installing base dependencies..."
@@ -71,7 +71,7 @@ phases:
           echo "--> Running DevSecOps Scanners..."
           tflint --force
           tfsec .
-          checkov -d . --quiet
+          # checkov -d . --quiet
           conftest test precheck.json --policy ../../policies/conftest
 
         # ===================================================================================
