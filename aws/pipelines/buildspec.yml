@@ -13,15 +13,15 @@ phases:
       - echo "==> [Environment-- ${ENV}]"
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
-      # This must be done first so tool versions are available during installation.
-      - pip install -q yq
+      - ls -lart
+      - pip install --upgrade pip -q yq pyyaml awscli "checkov==${CHECKOV_VERSION}"
       - export $(yq '.pipeline-parameters | to_entries | .[] | .key + "=" + .value' ${PIPELINE_VARS_PATH} | xargs)
       - echo "--> Successfully loaded and exported pipeline variables."
       - echo "==> [INSTALL] Installing base dependencies..."
       - set -e # Exit immediately if a command exits with a non-zero status.
-      - pip install --upgrade pip
+      # - pip install --upgrade pip
       # Install all required python packages, including the yq wrapper.
-      - pip install pyyaml awscli "checkov==${CHECKOV_VERSION}"
+      # - pip install --upgrade pip -q yq pyyaml awscli "checkov==${CHECKOV_VERSION}"
       - npm install -g ajv-cli
 
       - echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
