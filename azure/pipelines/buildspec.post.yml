@@ -1,0 +1,14 @@
+version: 0.2
+phases:
+  install:
+    commands:
+      - pip install awscli
+  build:
+    commands:
+      - echo "Run selective post validation"
+      - python ../../../terraform-platform/tools/post_validate.py --tfstate s3://my-tfstate-bucket-123456/ecom/dev/terraform.tfstate --resources-file generated/all.tfvars.json
+      - aws ec2 describe-instances --filters "Name=tag:Name,Values=ecom-app-01" --query "Reservations[].Instances[].State.Name"
+  post_build:
+    commands:
+      - echo "Notify via SNS"
+      - aws sns publish --topic-arn arn:aws:sns:us-east-2:123456789012:terraform-notify --message "Deployment completed"

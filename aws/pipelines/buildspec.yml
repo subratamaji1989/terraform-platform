@@ -1,0 +1,123 @@
+version: 0.2
+
+# variables:
+#     # The only variable needed from the CodeBuild project. It points to the pipeline's configuration file.
+#   PIPELINE_VARS_PATH: "app-ovr-infra/aws/${ENV}/pipeline-vars.yml"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+      nodejs: 16
+    commands:
+      - echo "==> [Environment-- ${ENV}]"
+      - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
+      # Use yq to parse the YAML file and export its keys as environment variables.
+      # This must be done first so tool versions are available during installation.
+      - pip install -q yq
+      - export $(yq '.pipeline-parameters | to_entries | .[] | .key + "=" + .value' ${PIPELINE_VARS_PATH} | xargs)
+      - echo "--> Successfully loaded and exported pipeline variables."
+      - echo "==> [INSTALL] Installing base dependencies..."
+      - set -e # Exit immediately if a command exits with a non-zero status.
+      - pip install --upgrade pip
+      # Install all required python packages, including the yq wrapper.
+      - pip install pyyaml awscli "checkov==${CHECKOV_VERSION}"
+      - npm install -g ajv-cli
+
+      - echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
+      - wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O /tmp/tf.zip
+      - unzip /tmp/tf.zip -d /usr/local/bin
+      - terraform -v
+
+      - echo "==> [INSTALL] Installing DevSecOps tools..."
+      # Securely install tflint by downloading and then executing, rather than piping to bash
+      - curl -sL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh > /tmp/install_tflint.sh
+      - chmod +x /tmp/install_tflint.sh
+      - /tmp/install_tflint.sh
+      - curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+      - curl -L "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin
+
+  build:
+    commands:
+      - |
+        set -eu # Exit on error and on unset variables
+        # ===================================================================================
+        # ==                            VALIDATE STAGE                                     ==
+        # ===================================================================================
+
+        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+          echo "==> [BUILD] Executing VALIDATE stage..."
+
+          echo "--> Validating YAML against JSON schema..."
+          if [ -n "${SCHEMA_PATH:-}" ] && [ -n "${MAIN_YAML_FILE:-}" ]; then
+            ajv validate -s "$SCHEMA_PATH" -d "${VARS_PATH}/${MAIN_YAML_FILE}"
+          else
+            echo "--> Skipping schema validation: SCHEMA_PATH or MAIN_YAML_FILE not set."
+          fi
+
+          echo "--> Merging YAML files into all.tfvars.json..."
+          mkdir -p generated
+          python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
+
+          echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
+          cd "$COMPOSITION_PATH"
+          terraform init -backend=false
+          terraform validate
+          # Let the plan fail if there are errors. The 'set -e' will catch it.
+          terraform plan -var-file=../../../../generated/all.tfvars.json -out=precheck.tfplan
+          # Only generate JSON if plan was successful
+          terraform show -json precheck.tfplan > precheck.json
+
+          echo "--> Running DevSecOps Scanners..."
+          tflint --force
+          tfsec .
+          checkov -d . --quiet
+          conftest test precheck.json --policy ../../policies/conftest
+
+        # ===================================================================================
+        # ==                               PLAN STAGE                                      ==
+        # ===================================================================================
+        if [ "$PIPELINE_STAGE" = "PLAN" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+          echo "==> [BUILD] Executing PLAN stage..."
+          echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
+          cd "$COMPOSITION_PATH"
+          terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+
+          echo "--> Generating Terraform plan..."
+          terraform plan -var-file=../../../../generated/all.tfvars.json -out=tfplan
+          terraform show -json tfplan > plan.json
+
+        # ===================================================================================
+        # ==                               APPLY STAGE                                     ==
+        # ===================================================================================
+        if [ "$PIPELINE_STAGE" = "APPLY" ]; then
+          echo "==> [BUILD] Executing APPLY stage..."
+          echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
+          cd "$COMPOSITION_PATH"
+          # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
+          terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+
+          echo "--> Applying Terraform plan..."
+          terraform apply -input=false tfplan
+
+        # ===================================================================================
+        # ==                           POST-VALIDATE STAGE                                 ==
+        # ===================================================================================
+        if [ "$PIPELINE_STAGE" = "POST_VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+          echo "==> [BUILD] Executing POST-VALIDATE stage..."
+          echo "--> Running AWS post-deployment checks..."
+          # Example: Check instance state using values from the generated variables artifact
+          INSTANCE_NAME=$(yq -r '.tags.Name' generated/all.tfvars.json)
+          aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name"
+          # Example: Notify via SNS using a topic ARN from Parameter Store
+          aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
+        fi
+
+artifacts:
+  files:
+    - 'generated/all.tfvars.json'
+    - '${COMPOSITION_PATH}/precheck.tfplan'
+    - '${COMPOSITION_PATH}/precheck.json'
+    - '${COMPOSITION_PATH}/tfplan'
+    - '${COMPOSITION_PATH}/plan.json'
+  discard-paths: yes

@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "vpc": {
+      "type": "object",
+      "properties": {
+        "cidr": {
+          "type": "string",
+          "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$"
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["cidr", "tags"]
+    },
+    "subnets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "cidr": {
+            "type": "string",
+            "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$"
+          },
+          "availability_zone": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["name", "cidr"]
+      }
+    },
+    "route_tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "destination_cidr_block": {
+                  "type": "string",
+                  "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$"
+                },
+                "target": {
+                  "type": "string"
+                }
+              },
+              "required": ["destination_cidr_block", "target"]
+            }
+          },
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["name", "routes"]
+      }
+    }
+  },
+  "required": ["vpc", "subnets"]
+}

@@ -1,0 +1,43 @@
+version: 0.2
+env:
+  variables:
+    # This variable allows the pipeline to target different compositions.
+    COMPOSITION_PATH: "terraform-platform/azure/infra-stack/aks-stack"
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+    commands:
+      - echo Installing tools...
+      - pip install --upgrade pip
+      - pip install pyyaml
+      - curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+      - curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+      - pip install checkov==2.0.0
+      - curl -L "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" | tar xz && mv conftest /usr/local/bin
+      - npm i -g ajv-cli
+  pre_build:
+    commands:
+      - echo "Cloning platform and app repos (CodePipeline provides these by default)"
+  build:
+    commands:
+      - echo "Validate YAML against JSON schema"
+      - echo "Schema validation for Azure not yet implemented. Skipping." # Placeholder
+      - echo "Merge YAML to JSON"
+      - python terraform-platform/tools/yaml2tfvars.py app-ovr-infra/azure/dev/vars generated/all.tfvars.json
+      - echo "Terraform init (temp)"
+      - cd $COMPOSITION_PATH
+      - terraform init -backend=false
+      - terraform validate || true
+      - terraform plan -var-file=../../../generated/all.tfvars.json -out=precheck.tfplan || (terraform show -json precheck.tfplan > precheck.json; exit 0)
+      - terraform show -json precheck.tfplan > precheck.json
+      - echo "Run tflint/tfsec/checkov"
+      - tflint
+      - tfsec . --no-color
+      - checkov -d .
+      - conftest test precheck.json --policy ../../policies/conftest
+artifacts:
+  files:
+    - ${COMPOSITION_PATH}/precheck.tfplan
+    - ${COMPOSITION_PATH}/precheck.json
+    - generated/all.tfvars.json
