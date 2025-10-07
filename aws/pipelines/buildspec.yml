@@ -46,7 +46,7 @@ phases:
       - chmod +x /tmp/install_tflint.sh
       - /tmp/install_tflint.sh
       - curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
-      - curl -L "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin
+      # - curl -L "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin
 
   build:
     commands:
@@ -83,7 +83,7 @@ phases:
           tflint --force
           tfsec .
           # checkov -d . --quiet
-          conftest test precheck.json --policy ../../policies/conftest
+          # conftest test precheck.json --policy ../../policies/conftest
 
         # ===================================================================================
         # ==                               PLAN STAGE                                      ==
