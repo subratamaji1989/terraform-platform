@@ -57,59 +57,67 @@ phases:
         # ===================================================================================
 
         if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
-          echo "==> [BUILD] Executing VALIDATE stage..."
+          (
+            echo "==> [BUILD] Executing VALIDATE stage..."
 
-          echo "--> Validating YAML against JSON schema..."
-          if [ -n "${SCHEMA_PATH:-}" ] && [ -n "${MAIN_YAML_FILE:-}" ]; then
-            ajv validate -s "$SCHEMA_PATH" -d "${VARS_PATH}/${MAIN_YAML_FILE}"
-          else
-            echo "--> Skipping schema validation: SCHEMA_PATH or MAIN_YAML_FILE not set."
-          fi
+            echo "--> Validating YAML against JSON schema..."
+            if [ -n "${SCHEMA_PATH:-}" ] && [ -n "${MAIN_YAML_FILE:-}" ]; then
+              ajv validate -s "$SCHEMA_PATH" -d "${VARS_PATH}/${MAIN_YAML_FILE}"
+            else
+              echo "--> Skipping schema validation: SCHEMA_PATH or MAIN_YAML_FILE not set."
+            fi
 
-          echo "--> Merging YAML files into all.tfvars.json..."
-          mkdir -p generated
-          python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
+            echo "--> Merging YAML files into all.tfvars.json..."
+            mkdir -p generated
+            python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
 
-          echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
-          cd "$COMPOSITION_PATH"
-          terraform init -backend=false
-          terraform validate
-          # Let the plan fail if there are errors. The 'set -e' will catch it.
-          terraform plan -var-file=../../../../generated/all.tfvars.json -out=precheck.tfplan
-          # Only generate JSON if plan was successful
-          terraform show -json precheck.tfplan > precheck.json
+            echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
+            cd "$COMPOSITION_PATH"
+            terraform init -backend=false
+            terraform validate
+            # Let the plan fail if there are errors. The 'set -e' will catch it.
+            terraform plan -var-file=../../../../generated/all.tfvars.json -out=precheck.tfplan
+            # Only generate JSON if plan was successful
+            terraform show -json precheck.tfplan > precheck.json
 
-          echo "--> Running DevSecOps Scanners..."
-          tflint --force
-          tfsec .
-          # checkov -d . --quiet
-          # conftest test precheck.json --policy ../../policies/conftest
+            echo "--> Running DevSecOps Scanners..."
+            tflint --force
+            tfsec .
+            # checkov -d . --quiet
+            # conftest test precheck.json --policy ../../policies/conftest
+          )
+        fi
 
         # ===================================================================================
         # ==                               PLAN STAGE                                      ==
         # ===================================================================================
         if [ "$PIPELINE_STAGE" = "PLAN" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
-          echo "==> [BUILD] Executing PLAN stage..."
-          echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-          cd "$COMPOSITION_PATH"
-          terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+          (
+            echo "==> [BUILD] Executing PLAN stage..."
+            echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
+            cd "$COMPOSITION_PATH"
+            terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
 
-          echo "--> Generating Terraform plan..."
-          terraform plan -var-file=../../../../generated/all.tfvars.json -out=tfplan
-          terraform show -json tfplan > plan.json
+            echo "--> Generating Terraform plan..."
+            terraform plan -var-file=../../../../generated/all.tfvars.json -out=tfplan
+            terraform show -json tfplan > plan.json
+          )
+        fi
 
         # ===================================================================================
         # ==                               APPLY STAGE                                     ==
         # ===================================================================================
         if [ "$PIPELINE_STAGE" = "APPLY" ]; then
-          echo "==> [BUILD] Executing APPLY stage..."
-          echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-          cd "$COMPOSITION_PATH"
-          # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
-          terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
-
-          echo "--> Applying Terraform plan..."
-          terraform apply -input=false tfplan
+          (
+            echo "==> [BUILD] Executing APPLY stage..."
+            echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
+            cd "$COMPOSITION_PATH"
+            # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
+            terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+            echo "--> Applying Terraform plan..."
+            terraform apply -input=false tfplan
+          )
+        fi
 
         # ===================================================================================
         # ==                           POST-VALIDATE STAGE                                 ==
@@ -123,6 +131,7 @@ phases:
           # Example: Notify via SNS using a topic ARN from Parameter Store
           aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
         fi
+      fi
 
 artifacts:
   files:
