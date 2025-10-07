@@ -51,7 +51,7 @@ phases:
   build:
     commands:
       - |
-        set -eu # Exit on error and on unset variables
+        # set -eu # Exit on error and on unset variables
         # ===================================================================================
         # ==                            VALIDATE STAGE                                     ==
         # ===================================================================================
@@ -131,7 +131,7 @@ phases:
           # Example: Notify via SNS using a topic ARN from Parameter Store
           aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
         fi
-      fi
+      
 
 artifacts:
   files:
