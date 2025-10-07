@@ -10,9 +10,12 @@ phases:
       python: 3.9
       nodejs: 16
     commands:
-      - echo "==> [INSTALL] Installing yq (standalone)..."
-      - wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-      - chmod +x /usr/local/bin/yq
+      - |
+        echo "==> [INSTALL] Installing yq (standalone)..."
+        if ! command -v yq &>/dev/null; then
+          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+        fi
 
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
@@ -35,18 +38,26 @@ phases:
       - set -e # Exit immediately if a command exits with a non-zero status.
       - npm install -g ajv-cli
 
-      - echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
-      - wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O /tmp/tf.zip
-      - unzip /tmp/tf.zip -d /usr/local/bin
-      - terraform -v
+      - |
+        echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
+        # Only install if the correct version isn't already present to save time.
+        if ! terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+          wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O /tmp/tf.zip
+          unzip -o /tmp/tf.zip -d /usr/local/bin
+          rm /tmp/tf.zip
+        fi
+        terraform -v
 
-      - echo "==> [INSTALL] Installing DevSecOps tools..."
-      # Securely install tflint by downloading and then executing, rather than piping to bash
-      - curl -sL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh > /tmp/install_tflint.sh
-      - chmod +x /tmp/install_tflint.sh
-      - /tmp/install_tflint.sh
-      - curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
-      # - curl -L "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" | tar xz -C /usr/local/bin
+      - |
+        echo "==> [INSTALL] Installing DevSecOps tools..."
+        # Securely install tflint by downloading and then executing, not piping to bash
+        if ! command -v tflint &>/dev/null; then
+          curl -sL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh > /tmp/install_tflint.sh
+          chmod +x /tmp/install_tflint.sh && /tmp/install_tflint.sh && rm /tmp/install_tflint.sh
+        fi
+        if ! command -v tfsec &>/dev/null; then
+          curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+        fi
 
   build:
     commands:
@@ -59,6 +70,7 @@ phases:
         # Make all paths absolute to prevent issues after changing directories.
         COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH}"
         SCHEMA_PATH="${PROJECT_ROOT}/${SCHEMA_PATH}"
+        TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
         VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH}"
         BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH}"
         
@@ -81,7 +93,7 @@ phases:
 
             echo "--> Merging YAML files into all.tfvars.json..."
             mkdir -p generated
-            python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" "${TFVARS_FILE}"
+            python ${TOOLS_PATH}/yaml2tfvars.py "$VARS_PATH" "${TFVARS_FILE}"
 
             echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
             cd "$COMPOSITION_PATH"
@@ -147,9 +159,13 @@ phases:
 
 artifacts:
   files:
+    # This generated file contains all merged variables and is needed by the PLAN stage.
     - 'generated/all.tfvars.json'
+    # The pre-check plan file, used for security scanning and validation. Not used by subsequent stages.
     - '${COMPOSITION_PATH}/precheck.tfplan'
     - '${COMPOSITION_PATH}/precheck.json'
+    # The final plan file, which is the primary artifact for the APPLY stage.
     - '${COMPOSITION_PATH}/tfplan'
+    # The JSON representation of the final plan, useful for post-processing or manual review.
     - '${COMPOSITION_PATH}/plan.json'
   discard-paths: yes
