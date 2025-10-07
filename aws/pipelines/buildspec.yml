@@ -51,6 +51,18 @@ phases:
   build:
     commands:
       - |
+        # Store the absolute path to the project root.
+        PROJECT_ROOT=$(pwd)
+        # Define an absolute path for the generated tfvars file to avoid path issues after changing directories.
+        TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
+
+        # Make all paths absolute to prevent issues after changing directories.
+        COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH}"
+        SCHEMA_PATH="${PROJECT_ROOT}/${SCHEMA_PATH}"
+        VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH}"
+        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH}"
+        
+
         # set -eu # Exit on error and on unset variables
         # ===================================================================================
         # ==                            VALIDATE STAGE                                     ==
@@ -69,14 +81,14 @@ phases:
 
             echo "--> Merging YAML files into all.tfvars.json..."
             mkdir -p generated
-            python aws/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
+            python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" "${TFVARS_FILE}"
 
             echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
             cd "$COMPOSITION_PATH"
             terraform init -backend=false
             terraform validate
             # Let the plan fail if there are errors. The 'set -e' will catch it.
-            terraform plan -var-file=generated/all.tfvars.json -out=precheck.tfplan
+            terraform plan -var-file="${TFVARS_FILE}" -out=precheck.tfplan
             # Only generate JSON if plan was successful
             terraform show -json precheck.tfplan > precheck.json
 
@@ -96,10 +108,10 @@ phases:
             echo "==> [BUILD] Executing PLAN stage..."
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
             cd "$COMPOSITION_PATH"
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}"
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure
 
             echo "--> Generating Terraform plan..."
-            terraform plan -var-file=generated/all.tfvars.json -out=tfplan
+            terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
             terraform show -json tfplan > plan.json
           )
         fi
@@ -113,7 +125,7 @@ phases:
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
             cd "$COMPOSITION_PATH"
             # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}"
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure
             echo "--> Applying Terraform plan..."
             terraform apply -input=false tfplan
           )
@@ -126,7 +138,7 @@ phases:
           echo "==> [BUILD] Executing POST-VALIDATE stage..."
           echo "--> Running AWS post-deployment checks..."
           # Example: Check instance state using values from the generated variables artifact
-          INSTANCE_NAME=$(yq -r '.tags.Name' generated/all.tfvars.json)
+          INSTANCE_NAME=$(yq -r '.tags.Name' "${TFVARS_FILE}")
           aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name"
           # Example: Notify via SNS using a topic ARN from Parameter Store
           aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
