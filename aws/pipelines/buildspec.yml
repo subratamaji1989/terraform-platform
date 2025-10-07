@@ -10,18 +10,29 @@ phases:
       python: 3.9
       nodejs: 16
     commands:
-      - echo "==> [Environment-- ${ENV}]"
+      - echo "==> [INSTALL] Installing yq (standalone)..."
+      - wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+      - chmod +x /usr/local/bin/yq
+
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
-      - ls -lart aws
-      - pip install --upgrade pip -q yq pyyaml awscli
-      - export $(yq '.pipeline-parameters | to_entries | .[] | .key + "=" + .value' ${PIPELINE_VARS_PATH} | xargs)
-      - echo "--> Successfully loaded and exported pipeline variables."
+      - pip install --upgrade pip -q pyyaml awscli
+      - eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
+      - |
+        # Verify that all essential variables have been loaded.
+        for var in PIPELINE_STAGE COMPOSITION_PATH TF_VERSION; do
+          if [ -z "${!var}" ]; then
+            echo "FATAL: Essential pipeline variable '$var' is missing or empty. Check ${PIPELINE_VARS_PATH}."
+            exit 1
+          fi
+        done
+
+        echo "--> Successfully loaded and exported pipeline variables:"
+        echo "    PIPELINE_STAGE: ${PIPELINE_STAGE}"
+        echo "    COMPOSITION_PATH: ${COMPOSITION_PATH}"
+        echo "    TF_VERSION: ${TF_VERSION}"
       - echo "==> [INSTALL] Installing base dependencies..."
       - set -e # Exit immediately if a command exits with a non-zero status.
-      # - pip install --upgrade pip
-      # Install all required python packages, including the yq wrapper.
-      # - pip install --upgrade pip -q yq pyyaml awscli "checkov==${CHECKOV_VERSION}"
       - npm install -g ajv-cli
 
       - echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
