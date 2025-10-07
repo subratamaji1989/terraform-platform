@@ -56,7 +56,7 @@ phases:
         # ==                            VALIDATE STAGE                                     ==
         # ===================================================================================
 
-        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "PLAN" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
           (
             echo "==> [BUILD] Executing VALIDATE stage..."
 
@@ -69,14 +69,14 @@ phases:
 
             echo "--> Merging YAML files into all.tfvars.json..."
             mkdir -p generated
-            python terraform-platform/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
+            python aws/tools/yaml2tfvars.py "$VARS_PATH" generated/all.tfvars.json
 
             echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
             cd "$COMPOSITION_PATH"
             terraform init -backend=false
             terraform validate
             # Let the plan fail if there are errors. The 'set -e' will catch it.
-            terraform plan -var-file=../../../../generated/all.tfvars.json -out=precheck.tfplan
+            terraform plan -var-file=generated/all.tfvars.json -out=precheck.tfplan
             # Only generate JSON if plan was successful
             terraform show -json precheck.tfplan > precheck.json
 
@@ -96,10 +96,10 @@ phases:
             echo "==> [BUILD] Executing PLAN stage..."
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
             cd "$COMPOSITION_PATH"
-            terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}"
 
             echo "--> Generating Terraform plan..."
-            terraform plan -var-file=../../../../generated/all.tfvars.json -out=tfplan
+            terraform plan -var-file=generated/all.tfvars.json -out=tfplan
             terraform show -json tfplan > plan.json
           )
         fi
@@ -113,7 +113,7 @@ phases:
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
             cd "$COMPOSITION_PATH"
             # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
-            terraform init -backend-config="../../../../${BACKEND_CONFIG_PATH}"
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}"
             echo "--> Applying Terraform plan..."
             terraform apply -input=false tfplan
           )
