@@ -80,7 +80,7 @@ phases:
         # ==                            VALIDATE STAGE                                     ==
         # ===================================================================================
 
-        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "PLAN" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
           (
             echo "==> [BUILD] Executing VALIDATE stage..."
 
@@ -131,7 +131,7 @@ phases:
         # ===================================================================================
         # ==                               APPLY STAGE                                     ==
         # ===================================================================================
-        if [ "$PIPELINE_STAGE" = "APPLY" ]; then
+        if [ "$PIPELINE_STAGE" = "APPLY" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
           (
             echo "==> [BUILD] Executing APPLY stage..."
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
@@ -153,7 +153,7 @@ phases:
           INSTANCE_NAME=$(yq -r '.tags.Name' "${TFVARS_FILE}")
           aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name"
           # Example: Notify via SNS using a topic ARN from Parameter Store
-          aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
+          # aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
         fi
       
 
