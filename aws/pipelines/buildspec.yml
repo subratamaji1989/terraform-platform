@@ -11,7 +11,7 @@ phases:
       nodejs: 16
     commands:
       - |
-    
+        set +x  # silence command echo
         echo "==> [SETUP] Configuring cache and PATH..."
         mkdir -p .local/bin
         export PATH=$(pwd)/.local/bin:$PATH
@@ -74,6 +74,8 @@ phases:
   build:
     commands:
       - |
+        set +x  # silence command echo
+
         echo "==> [SETUP] Re-exporting PATH for build phase..."
         export PATH=$(pwd)/.local/bin:$PATH
 
