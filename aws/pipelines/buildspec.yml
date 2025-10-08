@@ -15,8 +15,7 @@ phases:
     runtime-versions:
       python: 3.9
       nodejs: 16
-    commands:
-      - |
+    commands: |
         # use bash features safely and fail fast on errors
         set -euo pipefail
         echo "==> [SETUP] Using bash, configuring cache and PATH..."
@@ -105,8 +104,7 @@ phases:
         # pip install "checkov==${CHECKOV_VERSION:-3.2.79}" conftest -q || true
 
   pre_build:
-    commands:
-      - |
+    commands: |
         set -euo pipefail
         echo "==> [PRE_BUILD] Re-exporting PATH to include .local/bin"
         export PATH="$(pwd)/.local/bin:$PATH"
@@ -117,8 +115,7 @@ phases:
         fi
 
   build:
-    commands:
-      - |
+    commands: |
         set -euo pipefail
         echo "==> [BUILD] Starting build phase..."
         export PATH="$(pwd)/.local/bin:$PATH"
