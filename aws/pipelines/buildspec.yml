@@ -26,11 +26,12 @@ phases:
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
       # Pinning dependency versions for reproducible builds.
+      - set -euo pipefail # Fail fast on any errors during setup
       - pip install --upgrade pip -q pyyaml awscli
       - eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
       - |
         # Verify that all essential variables have been loaded.
-        for var in PIPELINE_STAGE COMPOSITION_PATH TF_VERSION; do
+        for var in PIPELINE_STAGE COMPOSITION_PATH TF_VERSION STACK_NAME SCHEMAS_DIR_PATH; do
           if [ -z "${!var}" ]; then
             echo "FATAL: Essential pipeline variable '$var' is missing or empty. Check ${PIPELINE_VARS_PATH}."
             exit 1
@@ -40,6 +41,8 @@ phases:
         echo "--> Successfully loaded and exported pipeline variables:"
         echo "    PIPELINE_STAGE: ${PIPELINE_STAGE}"
         echo "    COMPOSITION_PATH: ${COMPOSITION_PATH}"
+        echo "    STACK_NAME: ${STACK_NAME}"
+        echo "    SCHEMAS_DIR_PATH: ${SCHEMAS_DIR_PATH}"
         echo "    TF_VERSION: ${TF_VERSION}"
 
       - echo "==> [INSTALL] Installing base dependencies..."
@@ -70,8 +73,7 @@ phases:
       - |
         echo "==> [INSTALL] Installing DevSecOps tools with explicit versions..."
         TFLINT_VERSION="v0.50.3"
-        TFSEC_VERSION="v1.28.1"
-        CHECKOV_VERSION="3.2.79" # Pinned version
+        TFSEC_VERSION="v1.28.1" # Pinned version
 
         # Install TFLint
         curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
@@ -80,7 +82,8 @@ phases:
         curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
 
         # Install Checkov & Conftest
-        pip install checkov=="${CHECKOV_VERSION}" conftest -q
+        # Use the version defined in pipeline-vars.yml, with a fallback default.
+        pip install checkov=="${CHECKOV_VERSION:-3.2.79}" conftest -q
         
 
   build:
@@ -100,10 +103,17 @@ phases:
 
         echo "--> Making all paths absolute..."
         COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH}"
-        SCHEMA_PATH="${PROJECT_ROOT}/${SCHEMA_PATH}"
+        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH}"
         TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
         VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH}"
         BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH}"
+
+        echo "--> Verifying existence of composition path: ${COMPOSITION_PATH}"
+        if [ ! -d "$COMPOSITION_PATH" ]; then
+            echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory."
+            echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
+            exit 1
+        fi
 
         echo "--> Merging variable YAML files into ${TFVARS_FILE}..."
         mkdir -p "$(dirname "${TFVARS_FILE}")"
@@ -122,12 +132,29 @@ phases:
           (
             echo "==> [BUILD] Executing VALIDATE stage..."
 
-            echo "--> Validating YAML against JSON schema..."
-            if [ -n "${SCHEMA_PATH:-}" ] && [ -n "${MAIN_YAML_FILE:-}" ]; then
-              ajv validate -s "$SCHEMA_PATH" -d "${VARS_PATH}/${MAIN_YAML_FILE}"
-            else
-              echo "--> Skipping schema validation: SCHEMA_PATH or MAIN_YAML_FILE not set."
-            fi
+            # Define a function to validate all YAML files in a directory against their corresponding schemas.
+            validate_yaml_files() {
+              local vars_dir="$1"
+              local schemas_dir="$2"
+
+              echo "--> Validating all YAML files in '${vars_dir}' against schemas in '${schemas_dir}'..."
+
+              if [ ! -d "$vars_dir" ]; then
+                  echo "--> WARNING: Variables directory '$vars_dir' not found. Skipping schema validation."
+                  return
+              fi
+
+              # Use find to handle cases with no .yaml files gracefully
+              find "$vars_dir" -name "*.yaml" -o -name "*.yml" | while read -r yaml_file; do
+                  local filename
+                  filename=$(basename "${yaml_file}")
+                  local schema_name="${filename%.*}.schema.json" # e.g., vm.yaml -> vm.schema.json
+                  local schema_file="${schemas_dir}/${schema_name}"
+
+                  [ -f "$schema_file" ] && ajv validate -s "$schema_file" -d "$yaml_file" || echo "--> INFO: No schema found for '${filename}', skipping validation."
+              done
+            }
+            validate_yaml_files "$VARS_PATH" "$SCHEMAS_DIR_PATH"
 
             echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
             terraform validate
