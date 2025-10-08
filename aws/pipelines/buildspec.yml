@@ -11,14 +11,21 @@ phases:
       nodejs: 16
     commands:
       - |
-        echo "==> [INSTALL] Installing yq (standalone)..."
+        echo "==> [INSTALL] Installing Pipeline dependencies (yq-standalone)..."
+        # Define expected checksum for yq to prevent supply-chain attacks
+        YQ_VERSION="v4.40.5" # Use a specific, known-good version
+        YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
+
         if ! command -v yq &>/dev/null; then
-          wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O /usr/local/bin/yq
+          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
           chmod +x /usr/local/bin/yq
         fi
+        yq --version
 
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
+      # Pinning dependency versions for reproducible builds.
       - pip install --upgrade pip -q pyyaml awscli
       - eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
       - |
@@ -34,52 +41,83 @@ phases:
         echo "    PIPELINE_STAGE: ${PIPELINE_STAGE}"
         echo "    COMPOSITION_PATH: ${COMPOSITION_PATH}"
         echo "    TF_VERSION: ${TF_VERSION}"
+
       - echo "==> [INSTALL] Installing base dependencies..."
-      - set -e # Exit immediately if a command exits with a non-zero status.
       - npm install -g ajv-cli
 
       - |
         echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
+        # Define expected checksum for Terraform to prevent supply-chain attacks
+        # Find checksums at https://releases.hashicorp.com/terraform/
+        declare -A TF_CHECKSUMS=(
+          ["1.6.6"]="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353"
+        )
+        TF_SHA256="${TF_CHECKSUMS[${TF_VERSION}]}"
+
         # Only install if the correct version isn't already present to save time.
         if ! terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+          if [ -z "${TF_SHA256}" ]; then
+            echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined. Please add it to the buildspec."
+            exit 1
+          fi
           wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O /tmp/tf.zip
+          echo "${TF_SHA256}  /tmp/tf.zip" | sha256sum -c -
           unzip -o /tmp/tf.zip -d /usr/local/bin
           rm /tmp/tf.zip
         fi
         terraform -v
 
       - |
-        echo "==> [INSTALL] Installing DevSecOps tools..."
-        # Securely install tflint by downloading and then executing, not piping to bash
-        if ! command -v tflint &>/dev/null; then
-          curl -sL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh > /tmp/install_tflint.sh
-          chmod +x /tmp/install_tflint.sh && /tmp/install_tflint.sh && rm /tmp/install_tflint.sh
-        fi
-        if ! command -v tfsec &>/dev/null; then
-          curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
-        fi
+        echo "==> [INSTALL] Installing DevSecOps tools with explicit versions..."
+        TFLINT_VERSION="v0.50.3"
+        TFSEC_VERSION="v1.28.1"
+        CHECKOV_VERSION="3.2.79" # Pinned version
+
+        # Install TFLint
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
+
+        # Install TFSec
+        curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+
+        # Install Checkov & Conftest
+        pip install checkov=="${CHECKOV_VERSION}" conftest -q
+        
 
   build:
     commands:
       - |
+        set -euo pipefail # Exit on error, on unset variables, and on pipe failures.
+
+        # ===================================================================================
+        # ==                              COMMON SETUP                                     ==
+        # ===================================================================================
+        echo "==> [BUILD] Performing common setup..."
+
         # Store the absolute path to the project root.
         PROJECT_ROOT=$(pwd)
         # Define an absolute path for the generated tfvars file to avoid path issues after changing directories.
         TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
 
-        # Make all paths absolute to prevent issues after changing directories.
+        echo "--> Making all paths absolute..."
         COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH}"
         SCHEMA_PATH="${PROJECT_ROOT}/${SCHEMA_PATH}"
         TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
         VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH}"
         BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH}"
-        
 
-        # set -eu # Exit on error and on unset variables
+        echo "--> Merging variable YAML files into ${TFVARS_FILE}..."
+        mkdir -p "$(dirname "${TFVARS_FILE}")"
+        python3 "${TOOLS_PATH}/yaml2tfvars.py" "$VARS_PATH" "${TFVARS_FILE}"
+
+        echo "--> Changing to composition directory: ${COMPOSITION_PATH}"
+        cd "$COMPOSITION_PATH"
+
+        echo "--> Initializing Terraform for validation and dry-runs..."
+        terraform init -backend=false
+
         # ===================================================================================
         # ==                            VALIDATE STAGE                                     ==
         # ===================================================================================
-
         if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
           (
             echo "==> [BUILD] Executing VALIDATE stage..."
@@ -91,24 +129,19 @@ phases:
               echo "--> Skipping schema validation: SCHEMA_PATH or MAIN_YAML_FILE not set."
             fi
 
-            echo "--> Merging YAML files into all.tfvars.json..."
-            mkdir -p generated
-            python ${TOOLS_PATH}/yaml2tfvars.py "$VARS_PATH" "${TFVARS_FILE}"
-
             echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
-            cd "$COMPOSITION_PATH"
-            terraform init -backend=false
             terraform validate
             # Let the plan fail if there are errors. The 'set -e' will catch it.
             terraform plan -var-file="${TFVARS_FILE}" -out=precheck.tfplan
             # Only generate JSON if plan was successful
-            terraform show -json precheck.tfplan > precheck.json
+            terraform show -json precheck.tfplan > precheck.plan.json
 
             echo "--> Running DevSecOps Scanners..."
             tflint --force
             tfsec .
-            # checkov -d . --quiet
-            # conftest test precheck.json --policy ../../policies/conftest
+            checkov --directory . --quiet
+            # Find all conftest policies and run them against the plan
+            find "${PROJECT_ROOT}/policies/conftest" -name '*.rego' -print0 | xargs -0 -I {} conftest test precheck.plan.json --policy {} --no-color
           )
         fi
 
@@ -119,12 +152,11 @@ phases:
           (
             echo "==> [BUILD] Executing PLAN stage..."
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-            cd "$COMPOSITION_PATH"
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
 
             echo "--> Generating Terraform plan..."
             terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
-            terraform show -json tfplan > plan.json
+            terraform show -json tfplan > plan.json # For auditing and change analysis
           )
         fi
 
@@ -135,11 +167,10 @@ phases:
           (
             echo "==> [BUILD] Executing APPLY stage..."
             echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-            cd "$COMPOSITION_PATH"
             # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure
+            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
             echo "--> Applying Terraform plan..."
-            terraform apply -input=false tfplan
+            terraform apply -input=false "tfplan"
           )
         fi
 
@@ -150,7 +181,7 @@ phases:
           echo "==> [BUILD] Executing POST-VALIDATE stage..."
           echo "--> Running AWS post-deployment checks..."
           # Example: Check instance state using values from the generated variables artifact
-          INSTANCE_NAME=$(yq -r '.tags.Name' "${TFVARS_FILE}")
+          INSTANCE_NAME=$(yq e '.tags.Name' "${TFVARS_FILE}")
           aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name"
           # Example: Notify via SNS using a topic ARN from Parameter Store
           # aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
@@ -159,13 +190,10 @@ phases:
 
 artifacts:
   files:
-    # This generated file contains all merged variables and is needed by the PLAN stage.
-    - 'generated/all.tfvars.json'
-    # The pre-check plan file, used for security scanning and validation. Not used by subsequent stages.
-    - '${COMPOSITION_PATH}/precheck.tfplan'
-    - '${COMPOSITION_PATH}/precheck.json'
-    # The final plan file, which is the primary artifact for the APPLY stage.
-    - '${COMPOSITION_PATH}/tfplan'
-    # The JSON representation of the final plan, useful for post-processing or manual review.
-    - '${COMPOSITION_PATH}/plan.json'
-  discard-paths: yes
+    # Artifacts needed for subsequent stages or for auditing.
+    # The base-directory ensures artifacts are stored with their directory structure,
+    # which is crucial for the APPLY stage to find the tfplan file correctly.
+    - 'tfplan'
+    - 'plan.json'
+  base-directory: '${COMPOSITION_PATH}'
+  discard-paths: no
