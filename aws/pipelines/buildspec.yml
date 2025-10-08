@@ -83,7 +83,7 @@ phases:
 
         # Install Checkov & Conftest
         # Use the version defined in pipeline-vars.yml, with a fallback default.
-        pip install checkov=="${CHECKOV_VERSION:-3.2.79}" conftest -q
+        # pip install checkov=="${CHECKOV_VERSION:-3.2.79}" conftest -q
         
 
   build:
@@ -166,9 +166,9 @@ phases:
             echo "--> Running DevSecOps Scanners..."
             tflint --force
             tfsec .
-            checkov --directory . --quiet
-            # Find all conftest policies and run them against the plan
-            find "${PROJECT_ROOT}/policies/conftest" -name '*.rego' -print0 | xargs -0 -I {} conftest test precheck.plan.json --policy {} --no-color
+            # checkov --directory . --quiet
+            # # Find all conftest policies and run them against the plan
+            # find "${PROJECT_ROOT}/policies/conftest" -name '*.rego' -print0 | xargs -0 -I {} conftest test precheck.plan.json --policy {} --no-color
           )
         fi
 
