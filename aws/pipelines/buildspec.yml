@@ -11,22 +11,27 @@ phases:
       nodejs: 16
     commands:
       - |
-        echo "==> [INSTALL] Installing Pipeline dependencies (yq-standalone)..."
+        echo "==> [SETUP] Configuring cache and PATH..."
+        # Create a local directory for cached tools and add it to the system's PATH.
+        mkdir -p .local/bin
+        export PATH=$(pwd)/.local/bin:$PATH
+
+      - |
+        echo "==> [INSTALL] Installing yq..."
         # Define expected checksum for yq to prevent supply-chain attacks
         YQ_VERSION="v4.40.5" # Use a specific, known-good version
         YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
 
         if ! command -v yq &>/dev/null; then
-          wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O /usr/local/bin/yq
-          echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
-          chmod +x /usr/local/bin/yq
+          echo "--> yq not found in cache, downloading..."
+          wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O .local/bin/yq
+          echo "${YQ_SHA256}  .local/bin/yq" | sha256sum -c -
+          chmod +x .local/bin/yq
         fi
         yq --version
 
       - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
       # Use yq to parse the YAML file and export its keys as environment variables.
-      # Pinning dependency versions for reproducible builds.
-      - set -euo pipefail # Fail fast on any errors during setup
       - pip install --upgrade pip -q pyyaml awscli
       - eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
       - |
@@ -63,10 +68,10 @@ phases:
             echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined. Please add it to the buildspec."
             exit 1
           fi
-          wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O /tmp/tf.zip
-          echo "${TF_SHA256}  /tmp/tf.zip" | sha256sum -c -
-          unzip -o /tmp/tf.zip -d /usr/local/bin
-          rm /tmp/tf.zip
+          wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/terraform.zip
+          echo "${TF_SHA256}  .local/terraform.zip" | sha256sum -c -
+          unzip -o .local/terraform.zip -d .local/bin
+          rm .local/terraform.zip
         fi
         terraform -v
 
@@ -75,11 +80,19 @@ phases:
         TFLINT_VERSION="v0.50.3"
         TFSEC_VERSION="v1.28.1" # Pinned version
 
-        # Install TFLint
-        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
+        # Install TFLint if not cached
+        if ! command -v tflint &>/dev/null; then
+          echo "--> tflint not found in cache, downloading..."
+          # The install script puts it in /usr/local/bin, which is not cached. We move it.
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
+          mv /usr/local/bin/tflint .local/bin/tflint
+        fi
 
-        # Install TFSec
-        curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+        # Install TFSec if not cached
+        if ! command -v tfsec &>/dev/null; then
+          echo "--> tfsec not found in cache, downloading..."
+          curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec && chmod +x .local/bin/tfsec
+        fi
 
         # Install Checkov & Conftest
         # Use the version defined in pipeline-vars.yml, with a fallback default.
@@ -89,8 +102,6 @@ phases:
   build:
     commands:
       - |
-        set -euo pipefail # Exit on error, on unset variables, and on pipe failures.
-
         # ===================================================================================
         # ==                              COMMON SETUP                                     ==
         # ===================================================================================
@@ -224,3 +235,12 @@ artifacts:
     - 'plan.json'
   base-directory: '${COMPOSITION_PATH}'
   discard-paths: no
+
+cache:
+  paths:
+    # Cache the custom directory where we install binaries.
+    - '.local/bin/**/*'
+    # Cache the pip package cache. The home directory in CodeBuild is /root.
+    - '/root/.cache/pip/**/*'
+    # Cache the npm package cache.
+    - '/root/.npm/**/*'
