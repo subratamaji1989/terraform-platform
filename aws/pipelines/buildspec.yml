@@ -1,7 +1,7 @@
 version: 0.2
 
 env:
-  # Optional static defaults (override these via pipeline-vars.yml or CodeBuild env)
+  shell: bash
   variables:
     # Provide sensible defaults in case pipeline-vars.yml doesn't include them
     TF_VERSION: "1.6.6"
