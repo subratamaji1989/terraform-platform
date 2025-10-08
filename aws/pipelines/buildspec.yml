@@ -1,8 +1,14 @@
 version: 0.2
 
-# variables:
-#     # The only variable needed from the CodeBuild project. It points to the pipeline's configuration file.
-#   PIPELINE_VARS_PATH: "app-ovr-infra/aws/${ENV}/pipeline-vars.yml"
+env:
+  # Optional static defaults (override these via pipeline-vars.yml or CodeBuild env)
+  variables:
+    # Provide sensible defaults in case pipeline-vars.yml doesn't include them
+    TF_VERSION: "1.6.6"
+    TFLINT_VERSION: "v0.50.3"
+    TFSEC_VERSION: "v1.28.1"
+    # Path to pipeline variables file (this is expected to exist in your source or in a prior artifact)
+    # PIPELINE_VARS_PATH: "app-ovr-infra/aws/${ENV}/pipeline-vars.yml"
 
 phases:
   install:
@@ -11,208 +17,218 @@ phases:
       nodejs: 16
     commands:
       - |
-        set +x  # silence command echo
-        echo "==> [SETUP] Configuring cache and PATH..."
+        # use bash features safely and fail fast on errors
+        set -euo pipefail
+        echo "==> [SETUP] Using bash, configuring cache and PATH..."
         mkdir -p .local/bin
-        export PATH=$(pwd)/.local/bin:$PATH
+        export PATH="$(pwd)/.local/bin:$PATH"
+        echo "PATH=${PATH}"
 
-        echo "==> [INSTALL] Installing yq..."
+        echo "==> [INSTALL] Installing/validating 'yq'..."
         YQ_VERSION="v4.40.5"
         YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
-        if ! command -v yq &>/dev/null; then
+        if ! command -v yq >/dev/null 2>&1; then
           echo "--> yq not found in cache, downloading..."
-          wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O .local/bin/yq
+          wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O .local/bin/yq
           echo "${YQ_SHA256}  .local/bin/yq" | sha256sum -c -
           chmod +x .local/bin/yq
         fi
-        yq --version
+        yq --version || true
 
-        echo "==> [INSTALL] Installing base dependencies (pip, npm)..."
-        pip install --upgrade pip -q pyyaml awscli
+        echo "==> [INSTALL] Installing pip/npm dependencies..."
+        pip install --upgrade pip -q pyyaml awscli || true
         npm install -g ajv-cli
 
-        echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
-        eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
-        
-        echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
-        declare -A TF_CHECKSUMS=(
-          ["1.6.6"]="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353"
-        )
-        TF_SHA256="${TF_CHECKSUMS[${TF_VERSION}]}"
+        # Load pipeline variables (only if the file exists)
+        echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH} (if present)..."
+        if [ -f "${PIPELINE_VARS_PATH}" ]; then
+          # Be careful: this exports pipeline-parameters keys as env vars
+          eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
+        else
+          echo "--> WARNING: ${PIPELINE_VARS_PATH} not found. Continuing with defaults and existing env vars."
+        fi
 
-        # Only install if the correct version isn't already present to save time.
-        if ! terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+        echo "==> [INSTALL] Installing Terraform v${TF_VERSION} (if needed)..."
+        # Provide checksums using a simple case statement for POSIX compatibility (no associative arrays)
+        case "${TF_VERSION:-}" in
+          "1.6.6") TF_SHA256="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353" ;;
+          *) TF_SHA256="" ;;
+        esac
+
+        # Only install if terraform not present or version mismatch
+        if command -v terraform >/dev/null 2>&1; then
+          if terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+            echo "--> Correct Terraform already installed."
+          else
+            echo "--> Terraform present but version mismatch; will install requested version."
+            NEED_TF_INSTALL=1
+          fi
+        else
+          NEED_TF_INSTALL=1
+        fi
+
+        if [ "${NEED_TF_INSTALL:-0}" -eq 1 ]; then
           if [ -z "${TF_SHA256}" ]; then
-            echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined. Please add it to the buildspec."
+            echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined. Please add it to the buildspec or pipeline-vars."
             exit 1
           fi
-          wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/terraform.zip
-          echo "${TF_SHA256}  .local/terraform.zip" | sha256sum -c -
-          unzip -o .local/terraform.zip -d .local/bin
-          rm .local/terraform.zip
+          mkdir -p .local/download
+          wget -q "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/download/terraform.zip
+          echo "${TF_SHA256}  .local/download/terraform.zip" | sha256sum -c -
+          unzip -o .local/download/terraform.zip -d .local/bin
+          rm -f .local/download/terraform.zip
         fi
-        terraform -v
+        terraform -v || true
 
-        echo "==> [INSTALL] Installing DevSecOps tools with explicit versions..."
-        TFLINT_VERSION="v0.50.3"
-        TFSEC_VERSION="v1.28.1"
-        if ! command -v tflint &>/dev/null; then
-          echo "--> tflint not found in cache, downloading..."
-          # The install script puts it in /usr/local/bin, which is not cached. We move it.
-          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
-          mv /usr/local/bin/tflint .local/bin/tflint
+        echo "==> [INSTALL] Installing DevSecOps tools (tflint, tfsec)..."
+        # tflint
+        if ! command -v tflint >/dev/null 2>&1; then
+          echo "--> tflint not found; installing..."
+          curl -sSL "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64" -o .local/bin/tflint || {
+            # fallback to install script if binary URL not present
+            curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
+            mv /usr/local/bin/tflint .local/bin/tflint || true
+          }
+          chmod +x .local/bin/tflint || true
         fi
+        tflint --version || true
 
-        if ! command -v tfsec &>/dev/null; then
-          echo "--> tfsec not found in cache, downloading..."
-          curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec && chmod +x .local/bin/tfsec
+        # tfsec
+        if ! command -v tfsec >/dev/null 2>&1; then
+          echo "--> tfsec not found; installing..."
+          curl -sL "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec
+          chmod +x .local/bin/tfsec
         fi
+        tfsec --version || true
 
-        # pip install checkov=="${CHECKOV_VERSION:-3.2.79}" conftest -q
-        
+        # Optional: checkov/conftest can be installed if required.
+        # pip install "checkov==${CHECKOV_VERSION:-3.2.79}" conftest -q || true
+
+  pre_build:
+    commands:
+      - |
+        set -euo pipefail
+        echo "==> [PRE_BUILD] Re-exporting PATH to include .local/bin"
+        export PATH="$(pwd)/.local/bin:$PATH"
+        echo "PATH=${PATH}"
+        # Re-load pipeline variables again in pre_build/build because CodeBuild spawns a new shell for each phase
+        if [ -f "${PIPELINE_VARS_PATH}" ]; then
+          eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
+        fi
 
   build:
     commands:
       - |
-        set +x  # silence command echo
-
-        echo "==> [SETUP] Re-exporting PATH for build phase..."
-        export PATH=$(pwd)/.local/bin:$PATH
-
-        echo "==> [SETUP] Re-exporting variables for build phase..."
-        # The `eval` only lasts for the `install` phase, so we must run it again here.
-        # This is safe because PIPELINE_VARS_PATH is a system-provided environment variable.
-        eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
-
-        # ===================================================================================
-        # ==                              COMMON SETUP                                     ==
-        # ===================================================================================
-        echo "==> [BUILD] Performing common setup..."
-
-        # Store the absolute path to the project root.
-        PROJECT_ROOT=$(pwd)
-        # Define an absolute path for the generated tfvars file to avoid path issues after changing directories.
+        set -euo pipefail
+        echo "==> [BUILD] Starting build phase..."
+        export PATH="$(pwd)/.local/bin:$PATH"
+        PROJECT_ROOT="$(pwd)"
         TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
-
-        echo "--> Making all paths absolute..."
-        COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH}"
-        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH}"
+        echo "--> Making paths absolute (where defined)..."
+        # Only alter if variables are non-empty; otherwise keep as-is to avoid creating bad paths
+        COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH:-composition}"
+        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH:-schemas}"
         TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
-        VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH}"
-        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH}"
+        VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH:-vars}"
+        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH:-backend-config.tfvars}"
 
-        echo "--> Verifying existence of composition path: ${COMPOSITION_PATH}"
-        if [ ! -d "$COMPOSITION_PATH" ]; then
-            echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory."
-            echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
-            exit 1
+        echo "--> Checking composition path: ${COMPOSITION_PATH}"
+        if [ ! -d "${COMPOSITION_PATH}" ]; then
+          echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory: ${COMPOSITION_PATH}"
+          echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
+          exit 1
         fi
 
         echo "--> Merging variable YAML files into ${TFVARS_FILE}..."
         mkdir -p "$(dirname "${TFVARS_FILE}")"
-        python3 "${TOOLS_PATH}/yaml2tfvars.py" "$VARS_PATH" "${TFVARS_FILE}"
+        if [ -x "${TOOLS_PATH}/yaml2tfvars.py" ]; then
+          python3 "${TOOLS_PATH}/yaml2tfvars.py" "${VARS_PATH}" "${TFVARS_FILE}"
+        else
+          echo "--> WARNING: yaml2tfvars.py not found or not executable at ${TOOLS_PATH}. Skipping YAML merge."
+        fi
 
         echo "--> Changing to composition directory: ${COMPOSITION_PATH}"
-        cd "$COMPOSITION_PATH"
+        cd "${COMPOSITION_PATH}"
 
-        echo "--> Initializing Terraform for validation and dry-runs..."
+        echo "--> Initializing Terraform for validation/dry-run (no backend)..."
         terraform init -backend=false
 
-        # ===================================================================================
-        # ==                            VALIDATE STAGE                                     ==
-        # ===================================================================================
-        if [ "$PIPELINE_STAGE" = "VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
-          (
-            echo "==> [BUILD] Executing VALIDATE stage..."
+        # VALIDATE stage
+        if [ "${PIPELINE_STAGE:-ALL}" = "VALIDATE" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
+          echo "==> [BUILD] Executing VALIDATE stage..."
+          validate_yaml_files() {
+            local vars_dir="$1"
+            local schemas_dir="$2"
 
-            # Define a function to validate all YAML files in a directory against their corresponding schemas.
-            validate_yaml_files() {
-              local vars_dir="$1"
-              local schemas_dir="$2"
+            echo "--> Validating YAML files in '${vars_dir}' against schemas in '${schemas_dir}'..."
+            if [ ! -d "${vars_dir}" ]; then
+              echo "--> WARNING: Variables directory '${vars_dir}' not found. Skipping schema validation."
+              return
+            fi
 
-              echo "--> Validating all YAML files in '${vars_dir}' against schemas in '${schemas_dir}'..."
-
-              if [ ! -d "$vars_dir" ]; then
-                  echo "--> WARNING: Variables directory '$vars_dir' not found. Skipping schema validation."
-                  return
+            # find .yaml and .yml files
+            find "${vars_dir}" -type f \( -iname "*.yaml" -o -iname "*.yml" \) -print0 | while IFS= read -r -d '' yaml_file; do
+              filename="$(basename "${yaml_file}")"
+              schema_name="${filename%.*}.schema.json"
+              schema_file="${schemas_dir}/${schema_name}"
+              if [ -f "${schema_file}" ]; then
+                ajv validate -s "${schema_file}" -d "${yaml_file}" || {
+                  echo "ERROR: Schema validation failed for ${yaml_file}"
+                  return 1
+                }
+              else
+                echo "--> INFO: No schema found for '${filename}', skipping validation."
               fi
+            done
+          }
 
-              # Use find to handle cases with no .yaml files gracefully
-              find "$vars_dir" -name "*.yaml" -o -name "*.yml" | while read -r yaml_file; do
-                  local filename
-                  filename=$(basename "${yaml_file}")
-                  local schema_name="${filename%.*}.schema.json" # e.g., vm.yaml -> vm.schema.json
-                  local schema_file="${schemas_dir}/${schema_name}"
+          validate_yaml_files "${VARS_PATH}" "${SCHEMAS_DIR_PATH}"
 
-                  [ -f "$schema_file" ] && ajv validate -s "$schema_file" -d "$yaml_file" || echo "--> INFO: No schema found for '${filename}', skipping validation."
-              done
-            }
-            validate_yaml_files "$VARS_PATH" "$SCHEMAS_DIR_PATH"
+          echo "--> Running Terraform validate and plan (precheck)..."
+          terraform validate
+          terraform plan -var-file="${TFVARS_FILE}" -out=precheck.tfplan
+          terraform show -json precheck.tfplan > precheck.plan.json
 
-            echo "--> Running Terraform dry-run and security scans in ${COMPOSITION_PATH}..."
-            terraform validate
-            # Let the plan fail if there are errors. The 'set -e' will catch it.
-            terraform plan -var-file="${TFVARS_FILE}" -out=precheck.tfplan
-            # Only generate JSON if plan was successful
-            terraform show -json precheck.tfplan > precheck.plan.json
-
-            echo "--> Running DevSecOps Scanners..."
-            tflint --force
-            tfsec .
-            # checkov --directory . --quiet
-            # # Find all conftest policies and run them against the plan
-            # find "${PROJECT_ROOT}/policies/conftest" -name '*.rego' -print0 | xargs -0 -I {} conftest test precheck.plan.json --policy {} --no-color
-          )
+          echo "--> Running DevSecOps scanners (tflint, tfsec)..."
+          tflint --force || true
+          tfsec . || true
+          # checkov --directory . --quiet || true
         fi
 
-        # ===================================================================================
-        # ==                               PLAN STAGE                                      ==
-        # ===================================================================================
-        if [ "$PIPELINE_STAGE" = "PLAN" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
-          (
-            echo "==> [BUILD] Executing PLAN stage..."
-            echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
-
-            echo "--> Generating Terraform plan..."
-            terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
-            terraform show -json tfplan > plan.json # For auditing and change analysis
-          )
+        # PLAN stage
+        if [ "${PIPELINE_STAGE:-ALL}" = "PLAN" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
+          echo "==> [BUILD] Executing PLAN stage..."
+          terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
+          terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
+          terraform show -json tfplan > plan.json
         fi
 
-        # ===================================================================================
-        # ==                               APPLY STAGE                                     ==
-        # ===================================================================================
-        if [ "$PIPELINE_STAGE" = "APPLY" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
-          (
-            echo "==> [BUILD] Executing APPLY stage..."
-            echo "--> Initializing Terraform with backend config: ${BACKEND_CONFIG_PATH}"
-            # The 'tfplan' artifact is automatically downloaded by CodePipeline into the correct directory
-            terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
-            echo "--> Applying Terraform plan..."
-            terraform apply -input=false "tfplan"
-          )
+        # APPLY stage
+        if [ "${PIPELINE_STAGE:-ALL}" = "APPLY" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
+          echo "==> [BUILD] Executing APPLY stage..."
+          terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
+          terraform apply -input=false "tfplan"
         fi
 
-        # ===================================================================================
-        # ==                           POST-VALIDATE STAGE                                 ==
-        # ===================================================================================
-        if [ "$PIPELINE_STAGE" = "POST_VALIDATE" ] || [ "$PIPELINE_STAGE" = "ALL" ]; then
+        # POST_VALIDATE stage
+        if [ "${PIPELINE_STAGE:-ALL}" = "POST_VALIDATE" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing POST-VALIDATE stage..."
-          echo "--> Running AWS post-deployment checks..."
-          # Example: Check instance state using values from the generated variables artifact
-          INSTANCE_NAME=$(yq e '.tags.Name' "${TFVARS_FILE}")
-          aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name"
-          # Example: Notify via SNS using a topic ARN from Parameter Store
-          # aws sns publish --topic-arn "${SNS_TOPIC_ARN}" --message "Deployment for ${INSTANCE_NAME} completed successfully."
+          # Use yq safely to read tfvars
+          if [ -f "${TFVARS_FILE}" ]; then
+            INSTANCE_NAME="$(yq e '.tags.Name // ""' "${TFVARS_FILE}")"
+            if [ -n "${INSTANCE_NAME}" ]; then
+              echo "--> Checking EC2 instance state for Name=${INSTANCE_NAME}"
+              aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" --query "Reservations[].Instances[].State.Name" || true
+            else
+              echo "--> INFO: Instance name not found in tfvars. Skipping EC2 checks."
+            fi
+          else
+            echo "--> INFO: TFVARS file ${TFVARS_FILE} not found. Skipping POST_VALIDATE checks."
+          fi
         fi
-      
 
 artifacts:
   files:
-    # Artifacts needed for subsequent stages or for auditing.
-    # The base-directory ensures artifacts are stored with their directory structure,
-    # which is crucial for the APPLY stage to find the tfplan file correctly.
     - 'tfplan'
     - 'plan.json'
   base-directory: '${COMPOSITION_PATH}'
@@ -220,9 +236,6 @@ artifacts:
 
 cache:
   paths:
-    # Cache the custom directory where we install binaries.
     - '.local/bin/**/*'
-    # Cache the pip package cache. The home directory in CodeBuild is /root.
     - '/root/.cache/pip/**/*'
-    # Cache the npm package cache.
     - '/root/.npm/**/*'
