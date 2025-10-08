@@ -11,17 +11,15 @@ phases:
       nodejs: 16
     commands:
       - |
+        set -euo pipefail # Fail fast on any errors during setup
+
         echo "==> [SETUP] Configuring cache and PATH..."
-        # Create a local directory for cached tools and add it to the system's PATH.
         mkdir -p .local/bin
         export PATH=$(pwd)/.local/bin:$PATH
 
-      - |
         echo "==> [INSTALL] Installing yq..."
-        # Define expected checksum for yq to prevent supply-chain attacks
-        YQ_VERSION="v4.40.5" # Use a specific, known-good version
+        YQ_VERSION="v4.40.5"
         YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
-
         if ! command -v yq &>/dev/null; then
           echo "--> yq not found in cache, downloading..."
           wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O .local/bin/yq
@@ -30,33 +28,14 @@ phases:
         fi
         yq --version
 
-      - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
-      # Use yq to parse the YAML file and export its keys as environment variables.
-      - pip install --upgrade pip -q pyyaml awscli
-      - eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
-      - |
-        # Verify that all essential variables have been loaded.
-        for var in PIPELINE_STAGE COMPOSITION_PATH TF_VERSION STACK_NAME SCHEMAS_DIR_PATH; do
-          if [ -z "${!var}" ]; then
-            echo "FATAL: Essential pipeline variable '$var' is missing or empty. Check ${PIPELINE_VARS_PATH}."
-            exit 1
-          fi
-        done
+        echo "==> [INSTALL] Installing base dependencies (pip, npm)..."
+        pip install --upgrade pip -q pyyaml awscli
+        npm install -g ajv-cli
 
-        echo "--> Successfully loaded and exported pipeline variables:"
-        echo "    PIPELINE_STAGE: ${PIPELINE_STAGE}"
-        echo "    COMPOSITION_PATH: ${COMPOSITION_PATH}"
-        echo "    STACK_NAME: ${STACK_NAME}"
-        echo "    SCHEMAS_DIR_PATH: ${SCHEMAS_DIR_PATH}"
-        echo "    TF_VERSION: ${TF_VERSION}"
-
-      - echo "==> [INSTALL] Installing base dependencies..."
-      - npm install -g ajv-cli
-
-      - |
+        echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
+        eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
+        
         echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
-        # Define expected checksum for Terraform to prevent supply-chain attacks
-        # Find checksums at https://releases.hashicorp.com/terraform/
         declare -A TF_CHECKSUMS=(
           ["1.6.6"]="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353"
         )
@@ -75,12 +54,9 @@ phases:
         fi
         terraform -v
 
-      - |
         echo "==> [INSTALL] Installing DevSecOps tools with explicit versions..."
         TFLINT_VERSION="v0.50.3"
-        TFSEC_VERSION="v1.28.1" # Pinned version
-
-        # Install TFLint if not cached
+        TFSEC_VERSION="v1.28.1"
         if ! command -v tflint &>/dev/null; then
           echo "--> tflint not found in cache, downloading..."
           # The install script puts it in /usr/local/bin, which is not cached. We move it.
@@ -88,20 +64,25 @@ phases:
           mv /usr/local/bin/tflint .local/bin/tflint
         fi
 
-        # Install TFSec if not cached
         if ! command -v tfsec &>/dev/null; then
           echo "--> tfsec not found in cache, downloading..."
           curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec && chmod +x .local/bin/tfsec
         fi
 
-        # Install Checkov & Conftest
-        # Use the version defined in pipeline-vars.yml, with a fallback default.
         # pip install checkov=="${CHECKOV_VERSION:-3.2.79}" conftest -q
         
 
   build:
     commands:
       - |
+        echo "==> [SETUP] Re-exporting PATH for build phase..."
+        export PATH=$(pwd)/.local/bin:$PATH
+
+        echo "==> [SETUP] Re-exporting variables for build phase..."
+        # The `eval` only lasts for the `install` phase, so we must run it again here.
+        # This is safe because PIPELINE_VARS_PATH is a system-provided environment variable.
+        eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' ${PIPELINE_VARS_PATH})"
+
         # ===================================================================================
         # ==                              COMMON SETUP                                     ==
         # ===================================================================================
