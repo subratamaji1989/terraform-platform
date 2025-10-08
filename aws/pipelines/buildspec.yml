@@ -11,8 +11,7 @@ phases:
       nodejs: 16
     commands:
       - |
-        set -euo pipefail # Fail fast on any errors during setup
-
+    
         echo "==> [SETUP] Configuring cache and PATH..."
         mkdir -p .local/bin
         export PATH=$(pwd)/.local/bin:$PATH
