@@ -17,6 +17,16 @@ phases:
       nodejs: 16
     commands:
       - |
+        install_yq() {
+          echo "==> [INSTALL] Installing yq (if needed)..."
+          if command -v yq >/dev/null 2>&1; then
+            echo "--> yq already installed."
+            return
+          fi
+          local yq_version="v4.40.5"
+          wget -q "https://github.com/mikefarah/yq/releases/download/${yq_version}/yq_linux_amd64" -O .local/bin/yq
+          chmod +x .local/bin/yq
+        }
 
         # --- Helper Functions for Tool Installation ---
         install_terraform() {
@@ -52,6 +62,8 @@ phases:
         export PATH="$(pwd)/.local/bin:$PATH"
         echo "PATH=${PATH}"
 
+        install_yq
+
         echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
           eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
@@ -79,6 +91,8 @@ phases:
         export PATH="$(pwd)/.local/bin:$PATH"
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
           eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
+          echo "--> Printing loaded pipeline variables for verification:"
+          yq e '.pipeline-parameters | keys | .[]' "${PIPELINE_VARS_PATH}" | xargs -I {} sh -c 'echo "  {}: ${!{}}"'
         fi
 
   build:
