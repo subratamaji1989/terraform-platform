@@ -135,46 +135,56 @@ phases:
       - cd "${COMPOSITION_PATH}"
       - echo "--> Initializing Terraform for validation/dry-run (no backend)..."
       - terraform init -backend=false
+      # The following conditional blocks are grouped into a single command step
       - |
         if [ "${PIPELINE_STAGE:-ALL}" = "VALIDATE" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing VALIDATE stage..."
-          # The validate_yaml_files function is defined and called within this block
+          
           validate_yaml_files() {
             local vars_dir="$1"; local schemas_dir="$2"
             echo "--> Validating YAML files in '${vars_dir}' against schemas in '${schemas_dir}'..."
-            if [ ! -d "${vars_dir}" ]; then echo "--> WARNING: Variables directory '${vars_dir}' not found. Skipping schema validation."; return; fi
+            if [ ! -d "${vars_dir}" ]; then
+              echo "--> WARNING: Variables directory '${vars_dir}' not found. Skipping schema validation."
+              return
+            fi
             find "${vars_dir}" -type f \( -iname "*.yaml" -o -iname "*.yml" \) -print0 | while IFS= read -r -d '' yaml_file; do
               filename="$(basename "${yaml_file}")"; schema_name="${filename%.*}.schema.json"; schema_file="${schemas_dir}/${schema_name}"
               if [ -f "${schema_file}" ]; then
-                ajv validate -s "${schema_file}" -d "${yaml_file}" || { echo "ERROR: Schema validation failed for ${yaml_file}"; return 1; }
+                ajv validate -s "${schema_file}" -d "${yaml_file}" || {
+                  echo "ERROR: Schema validation failed for ${yaml_file}";
+                  return 1
+                }
               else
                 echo "--> INFO: No schema found for '${filename}', skipping validation."
               fi
             done
           }
+          
           validate_yaml_files "${VARS_PATH}" "${SCHEMAS_DIR_PATH}"
+          
           echo "--> Running Terraform validate and plan (precheck)..."
           terraform validate
           terraform plan -var-file="${TFVARS_FILE}" -out=precheck.tfplan
           terraform show -json precheck.tfplan > precheck.plan.json
+          
           echo "--> Running DevSecOps scanners (tflint, tfsec)..."
           tflint --force || true
           tfsec . || true
         fi
-      - |
+
         if [ "${PIPELINE_STAGE:-ALL}" = "PLAN" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing PLAN stage..."
           terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
           terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
           terraform show -json tfplan > plan.json
         fi
-      - |
+
         if [ "${PIPELINE_STAGE:-ALL}" = "APPLY" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing APPLY stage..."
           terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
           terraform apply -input=false "tfplan"
         fi
-      - |
+
         if [ "${PIPELINE_STAGE:-ALL}" = "POST_VALIDATE" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing POST-VALIDATE stage..."
           if [ -f "${TFVARS_FILE}" ]; then
