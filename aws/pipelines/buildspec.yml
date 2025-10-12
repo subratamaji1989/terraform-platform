@@ -27,15 +27,8 @@ phases:
             return
           fi
 
-          local tf_sha256=""
-          case "${TF_VERSION:-}" in
-            "1.6.6") tf_sha256="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353" ;;
-            *) echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined." >&2; exit 1 ;;
-          esac
-
           echo "--> Downloading Terraform..."
           wget -q "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/terraform.zip
-          echo "${tf_sha256}  .local/terraform.zip" | sha256sum -c -
           unzip -o .local/terraform.zip -d .local/bin
           rm -f .local/terraform.zip
         }
