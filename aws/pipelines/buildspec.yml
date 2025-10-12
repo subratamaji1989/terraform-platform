@@ -116,8 +116,8 @@ phases:
       - TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
       - VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH:-vars}"
       - BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH:-backend-config.tfvars}"
+      -  echo "--> Checking composition path ${COMPOSITION_PATH}"
       - |
-        echo "--> Checking composition path: ${COMPOSITION_PATH}"
         if [ ! -d "${COMPOSITION_PATH}" ]; then
           echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory: ${COMPOSITION_PATH}"
           echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
