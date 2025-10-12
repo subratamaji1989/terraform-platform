@@ -92,7 +92,10 @@ phases:
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
           eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
           echo "--> Printing loaded pipeline variables for verification:"
-          yq e '.pipeline-parameters | keys | .[]' "${PIPELINE_VARS_PATH}" | xargs -I {} sh -c 'echo "  {}: ${!{}}"'
+          yq e '.pipeline-parameters | keys | .[]' "${PIPELINE_VARS_PATH}" | while IFS= read -r key; do
+            eval "value=\$$key"
+            printf "  %s: %s\n" "$key" "$value"
+          done
         fi
 
   build:
@@ -102,14 +105,14 @@ phases:
         export PATH="$(pwd)/.local/bin:$PATH"
 
         PROJECT_ROOT="$(pwd)"
-        TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
-        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH:-schemas}"
-        TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
-        VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH:-vars}"
-        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH:-backend-config.tfvars}"
 
-        eval "COMPOSITION_PATH=\"${PROJECT_ROOT}/${COMPOSITION_PATH:-${CLOUD}/infra-stack/${STACK_NAME}}\""
-        echo "--> Resolved composition path: ${COMPOSITION_PATH}"
+        # Construct all paths using the variables loaded from pipeline-vars.yml
+        COMPOSITION_PATH="${PROJECT_ROOT}/${CLOUD}/infra-stack/${STACK_NAME}"
+        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${CLOUD}/schemas"
+        VARS_PATH="${PROJECT_ROOT}/../${APP}/${CLOUD}/${ENVIRONMENT}/vars"
+        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${APP}/${CLOUD}/${ENVIRONMENT}/backend.tf"
+        TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
+        TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
 
         if [ ! -d "${COMPOSITION_PATH}" ]; then
           echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory: ${COMPOSITION_PATH}"
