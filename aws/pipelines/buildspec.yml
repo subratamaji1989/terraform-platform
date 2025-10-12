@@ -131,7 +131,7 @@ phases:
         else
           echo "--> WARNING: yaml2tfvars.py not found or not executable at ${TOOLS_PATH}. Skipping YAML merge."
         fi
-      - echo "--> Changing to composition directory: ${COMPOSITION_PATH}"
+      - echo "--> Changing to composition directory ${COMPOSITION_PATH}"
       - cd "${COMPOSITION_PATH}"
       - echo "--> Initializing Terraform for validation/dry-run (no backend)..."
       - terraform init -backend=false
