@@ -17,7 +17,6 @@ phases:
       nodejs: 16
     commands:
       - |
-        set -euo pipefail
 
         # --- Helper Functions for Tool Installation ---
         install_terraform() {
@@ -76,7 +75,6 @@ phases:
   pre_build:
     commands:
       - |
-        set -euo pipefail
         echo "==> [PRE_BUILD] Re-sourcing environment for build phase..."
         export PATH="$(pwd)/.local/bin:$PATH"
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
@@ -86,7 +84,6 @@ phases:
   build:
     commands:
       - |
-        set -euo pipefail
         echo "==> [BUILD] Starting build phase..."
         export PATH="$(pwd)/.local/bin:$PATH"
 
