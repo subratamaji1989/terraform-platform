@@ -16,108 +16,97 @@ phases:
       python: 3.9
       nodejs: 16
     commands:
-      - set -euo pipefail
-      - echo "==> [SETUP] Using bash, configuring cache and PATH..."
-      - mkdir -p .local/bin
-      - export PATH="$(pwd)/.local/bin:$PATH"
-      - echo "PATH=${PATH}"
-      - echo "==> [INSTALL] Installing/validating 'yq'..."
-      - YQ_VERSION="v4.40.5"
-      - YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
       - |
-        if ! command -v yq >/dev/null 2>&1; then
-          echo "--> yq not found in cache, downloading..."
-          wget -q "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O .local/bin/yq
-          echo "${YQ_SHA256}  .local/bin/yq" | sha256sum -c -
-          chmod +x .local/bin/yq
-        fi
-      - yq --version || true
-      - echo "==> [INSTALL] Installing pip/npm dependencies (npm packages locally)..."
-      - pip install --upgrade pip -q pyyaml awscli || true
-      - npm config set prefix "$(pwd)/.local"
-      - npm install -g ajv-cli
-      - echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH} (if present)..."
-      - |
+        set -euo pipefail
+
+        # --- Helper Functions for Tool Installation ---
+        install_terraform() {
+          echo "==> [INSTALL] Installing Terraform v${TF_VERSION} (if needed)..."
+          if command -v terraform >/dev/null 2>&1 && terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+            echo "--> Correct Terraform version already installed."
+            return
+          fi
+
+          local tf_sha256=""
+          case "${TF_VERSION:-}" in
+            "1.6.6") tf_sha256="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353" ;;
+            *) echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined." >&2; exit 1 ;;
+          esac
+
+          echo "--> Downloading Terraform..."
+          wget -q "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/terraform.zip
+          echo "${tf_sha256}  .local/terraform.zip" | sha256sum -c -
+          unzip -o .local/terraform.zip -d .local/bin
+          rm -f .local/terraform.zip
+        }
+
+        install_devsecops_tools() {
+          echo "==> [INSTALL] Installing DevSecOps tools (tflint, tfsec)..."
+          if ! command -v tflint >/dev/null 2>&1; then
+            echo "--> Installing tflint..."
+            curl -sSL "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64" -o .local/bin/tflint
+            chmod +x .local/bin/tflint
+          fi
+          if ! command -v tfsec >/dev/null 2>&1; then
+            echo "--> Installing tfsec..."
+            curl -sL "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec
+            chmod +x .local/bin/tfsec
+          fi
+        }
+
+        # --- Main Install Logic ---
+        echo "==> [SETUP] Configuring environment..."
+        mkdir -p .local/bin
+        export PATH="$(pwd)/.local/bin:$PATH"
+        echo "PATH=${PATH}"
+
+        echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
           eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
         else
           echo "--> WARNING: ${PIPELINE_VARS_PATH} not found. Continuing with defaults and existing env vars."
         fi
-      - echo "==> [INSTALL] Installing Terraform v${TF_VERSION} (if needed)..."
-      - |
-        case "${TF_VERSION:-}" in
-          "1.6.6") TF_SHA256="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353" ;;
-          *) TF_SHA256="" ;;
-        esac
-      - |
-        if command -v terraform >/dev/null 2>&1; then
-          if terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
-            echo "--> Correct Terraform already installed."
-          else
-            echo "--> Terraform present but version mismatch; will install requested version."
-            NEED_TF_INSTALL=1
-          fi
-        else
-          NEED_TF_INSTALL=1
-        fi
-      - |
-        if [ "${NEED_TF_INSTALL:-0}" -eq 1 ]; then
-          if [ -z "${TF_SHA256}" ]; then
-            echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined. Please add it to the buildspec or pipeline-vars."
-            exit 1
-          fi
-          mkdir -p .local/download
-          wget -q "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O .local/download/terraform.zip
-          echo "${TF_SHA256}  .local/download/terraform.zip" | sha256sum -c -
-          unzip -o .local/download/terraform.zip -d .local/bin
-          rm -f .local/download/terraform.zip
-        fi
-      - terraform -v || true
-      - echo "==> [INSTALL] Installing DevSecOps tools (tflint, tfsec)..."
-      - |
-        if ! command -v tflint >/dev/null 2>&1; then
-          echo "--> tflint not found; installing..."
-          curl -sSL "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_VERSION}/tflint_linux_amd64" -o .local/bin/tflint || {
-            curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
-            mv /usr/local/bin/tflint .local/bin/tflint || true
-          }
-          chmod +x .local/bin/tflint || true
-        fi
-      - tflint --version || true
-      - |
-        if ! command -v tfsec >/dev/null 2>&1; then
-          echo "--> tfsec not found; installing..."
-          curl -sL "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o .local/bin/tfsec
-          chmod +x .local/bin/tfsec
-        fi
-      - tfsec --version || true
+
+        echo "==> [INSTALL] Installing base dependencies..."
+        pip install --upgrade pip -q pyyaml awscli || true
+        npm config set prefix "$(pwd)/.local"
+        npm install -g ajv-cli
+
+        install_terraform
+        install_devsecops_tools
+
+        echo "==> [INSTALL] Verifying tool versions..."
+        terraform --version
+        tflint --version
+        tfsec --version
 
   pre_build:
     commands:
-      - set -euo pipefail
-      - echo "==> [PRE_BUILD] Re-exporting PATH to include .local/bin"
-      - export PATH="$(pwd)/.local/bin:$PATH"
-      - echo "PATH=${PATH}"
       - |
+        set -euo pipefail
+        echo "==> [PRE_BUILD] Re-sourcing environment for build phase..."
+        export PATH="$(pwd)/.local/bin:$PATH"
         if [ -f "${PIPELINE_VARS_PATH}" ]; then
           eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
         fi
 
   build:
     commands:
-      - set -euo pipefail
-      - echo "==> [BUILD] Starting build phase..."
-      - export PATH="$(pwd)/.local/bin:$PATH"
-      - PROJECT_ROOT="$(pwd)"
-      - TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
-      - echo "--> Making paths absolute (where defined)..."
-      - COMPOSITION_PATH="${PROJECT_ROOT}/${COMPOSITION_PATH:-composition}"
-      - SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH:-schemas}"
-      - TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
-      - VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH:-vars}"
-      - BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH:-backend-config.tfvars}"
-      -  echo "--> Checking composition path ${COMPOSITION_PATH}"
       - |
+        set -euo pipefail
+        echo "==> [BUILD] Starting build phase..."
+        export PATH="$(pwd)/.local/bin:$PATH"
+
+        PROJECT_ROOT="$(pwd)"
+        TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
+        SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${SCHEMAS_DIR_PATH:-schemas}"
+        TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
+        VARS_PATH="${PROJECT_ROOT}/../${VARS_PATH:-vars}"
+        BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${BACKEND_CONFIG_PATH:-backend-config.tfvars}"
+
+        eval "COMPOSITION_PATH=\"${PROJECT_ROOT}/${COMPOSITION_PATH:-${CLOUD}/infra-stack/${STACK_NAME}}\""
+        echo "--> Resolved composition path: ${COMPOSITION_PATH}"
+
         if [ ! -d "${COMPOSITION_PATH}" ]; then
           echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory: ${COMPOSITION_PATH}"
           echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
@@ -125,18 +114,13 @@ phases:
         fi
       - echo "--> Merging variable YAML files into ${TFVARS_FILE}..."
       - mkdir -p "$(dirname "${TFVARS_FILE}")"
-      - |
-        if [ -x "${TOOLS_PATH}/yaml2tfvars.py" ]; then
-          python3 "${TOOLS_PATH}/yaml2tfvars.py" "${VARS_PATH}" "${TFVARS_FILE}"
-        else
-          echo "--> WARNING: yaml2tfvars.py not found or not executable at ${TOOLS_PATH}. Skipping YAML merge."
-        fi
+      - python3 "${TOOLS_PATH}/yaml2tfvars.py" "${VARS_PATH}" "${TFVARS_FILE}"
       - echo "--> Changing to composition directory ${COMPOSITION_PATH}"
       - cd "${COMPOSITION_PATH}"
       - echo "--> Initializing Terraform for validation/dry-run (no backend)..."
       - terraform init -backend=false
-      # The following conditional blocks are grouped into a single command step
       - |
+        # This block contains the main pipeline stage logic
         if [ "${PIPELINE_STAGE:-ALL}" = "VALIDATE" ] || [ "${PIPELINE_STAGE:-ALL}" = "ALL" ]; then
           echo "==> [BUILD] Executing VALIDATE stage..."
           
