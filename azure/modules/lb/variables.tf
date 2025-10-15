@@ -1,49 +1,36 @@
-variable "load_balancer" {
-  description = "Configuration object for the load balancer, typically from a YAML file."
-  type = object({
-    name               = string
-    internal           = optional(bool)
-    load_balancer_type = optional(string)
-    subnet_keys        = list(string)
-    tags               = optional(map(string))
-    security_groups    = optional(list(string))
-    listeners = map(object({
-      port             = number
-      protocol         = string
-      target_group = object({
-        name     = string
-        port     = number
-        protocol = optional(string)
-        health_check = optional(object({
-          path = optional(string)
-        }))
-        instances = map(object({
-          instance_type = string
-          ami           = string
-        }))
-      })
-    }))
-  })
-}
-
-variable "vpc_id" {
-  description = "The ID of the VPC where the load balancer will be deployed."
+variable "resource_group_name" {
+  description = "The name of the Azure Resource Group."
   type        = string
 }
 
-variable "subnet_lookup" {
-  description = "A map of subnet logical names to their actual AWS subnet IDs."
-  type        = map(string)
+variable "location" {
+  description = "The Azure region where resources will be deployed."
+  type        = string
 }
 
-variable "security_groups" {
-  description = "A list of security group IDs to associate with the load balancer."
-  type        = list(string)
-  default     = []
+variable "load_balancers" {
+  description = "A map of Azure Load Balancer (L4) configurations."
+  type = map(object({
+    name = string
+    sku  = optional(string, "Standard")
+    frontend_ip_configurations = list(object({
+      name              = string
+      public_ip_address = optional(bool, true)
+    }))
+    rules = list(object({
+      name          = string
+      protocol      = string
+      frontend_port = number
+      backend_port  = number
+    }))
+  }))
 }
 
-variable "sg_lookup" {
-  description = "A map of security group logical names to their actual AWS security group IDs."
-  type        = map(string)
+variable "vm_nic_ids_by_vm_key" {
+  description = "A map of objects containing VM NIC IDs and their target load balancer key."
+  type = map(object({
+    nic_id = string
+    lb_key = string
+  }))
   default     = {}
 }

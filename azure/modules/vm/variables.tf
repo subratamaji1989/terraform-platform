@@ -1,46 +1,58 @@
-# variables.tf - Input variables for the Azure VM module.
-
 variable "resource_group_name" {
-  description = "The name of the resource group where VMs will be created."
+  description = "The name of the Azure Resource Group."
   type        = string
 }
 
 variable "location" {
-  description = "The Azure region where the resources will be created."
+  description = "The Azure region where resources will be deployed."
   type        = string
 }
 
-variable "subnet_ids" {
-  description = "A map of logical subnet names to their actual Azure resource IDs."
-  type        = map(string)
+variable "name" {
+  description = "The name of the Virtual Machine."
+  type        = string
 }
 
-variable "instances" {
-  description = "A map of virtual machine configurations to create."
-  type = map(object({
-    vm_size        = string
-    admin_username = string
-    subnet_key     = string
-    image = object({
-      publisher = string
-      offer     = string
-      sku       = string
-      version   = string
-    })
-    tags = map(string)
-  }))
-  default = {}
+variable "size" {
+  description = "The size (SKU) of the Virtual Machine."
+  type        = string
+}
+
+variable "admin_username" {
+  description = "The admin username for the Virtual Machine."
+  type        = string
 }
 
 variable "admin_public_key" {
-  description = "The public SSH key for the admin user."
+  description = "The SSH public key for the admin user."
   type        = string
-  sensitive   = true
-  default     = null # Make this optional so plans don't fail if no VMs are defined.
+  nullable    = true
 }
 
-variable "tags" {
-  description = "A map of tags to apply to all resources."
-  type        = map(string)
-  default     = {}
+variable "admin_password" {
+  description = "The admin password for the Virtual Machine. Used if no public key is provided."
+  type        = string
+  nullable    = true
+}
+
+variable "image" {
+  description = "The source image for the virtual machine."
+  type = object({
+    publisher = string
+    offer     = string
+    sku       = string
+    version   = string
+  })
+  nullable = true
+}
+
+variable "subnet_ids" {
+  description = "A list of subnet IDs to associate with the VM's network interface."
+  type        = list(string)
+}
+
+variable "network_security_group_id" {
+  description = "The ID of the Network Security Group to associate with the VM's network interface."
+  type        = string
+  nullable    = true
 }

@@ -40,14 +40,53 @@ variable "sku_capacity" {
   type        = number
 }
 
-variable "frontend_port" {
-  description = "The port for the frontend listener."
-  type        = number
+variable "listeners" {
+  description = "A map of listener configurations for the Application Gateway."
+  type = map(object({
+    name     = string
+    # The name of the backend pool
+    protocol = string
+    port     = number
+  }))
+  default = {}
 }
 
-variable "backend_port" {
-  description = "The port for the backend HTTP settings."
-  type        = number
+variable "backend_pools" {
+  description = "A map of backend address pool configurations."
+  type = map(object({
+    name = string
+    backend_vm_keys = optional(list(string), [])
+  }))
+  default = {}
+}
+
+variable "http_settings" {
+  description = "A map of backend HTTP setting configurations."
+  type = map(object({
+    name     = string
+    protocol = string
+    port     = number
+    path     = optional(string, "/")
+  }))
+  default = {}
+}
+
+variable "routing_rules" {
+  description = "A map of request routing rule configurations."
+  type = map(object({
+    name             = string
+    priority         = number
+    listener_key     = string
+    backend_pool_key = string
+    http_setting_key = string
+  }))
+  default = {}
+}
+
+variable "vm_nic_ids_by_key" {
+  description = "A map of all VM network interface IDs, keyed by the VM's logical name."
+  type        = map(string)
+  default     = {}
 }
 
 variable "tags" {

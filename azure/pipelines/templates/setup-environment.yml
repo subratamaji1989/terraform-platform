@@ -1,0 +1,110 @@
+# Reusable Azure DevOps Template for complete environment setup.
+# This single template installs all dependencies, defines paths, and generates variable files.
+
+parameters:
+- name: setupType
+  type: string
+  default: 'minimal' # 'minimal' or 'full'
+
+steps:
+- task: Cache@2
+  displayName: 'Cache Tools and Packages'
+  inputs:
+    key: 'tools | $(Agent.OS) | setup-environment.yml'
+    path: '$(Pipeline.Workspace)/.cache'
+
+- task: Bash@3
+  displayName: 'Install Core Dependencies (yq, python)'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -euo pipefail
+      echo "==> [INSTALL] Installing yq..."
+      YQ_VERSION="v4.40.5"
+      YQ_SHA256="9323c8901842722a163b538656540e5bd5424a4c195914a57794e284a48d132a"
+      wget "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -O /usr/local/bin/yq
+      echo "${YQ_SHA256}  /usr/local/bin/yq" | sha256sum -c -
+      chmod +x /usr/local/bin/yq
+
+      echo "==> [INSTALL] Installing Python dependencies..."
+      pip install --upgrade pip -q pyyaml
+
+- task: Bash@3
+  displayName: 'Install Terraform v$(TF_VERSION)'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -euo pipefail
+      if terraform version 2>/dev/null | grep -q "Terraform v${TF_VERSION}"; then
+        echo "Terraform v${TF_VERSION} is already installed."
+        exit 0
+      fi
+      
+      echo "==> [INSTALL] Installing Terraform v${TF_VERSION}..."
+      declare -A TF_CHECKSUMS=( ["1.6.6"]="6c3992f231d49932138093f48f0e0a33a01383c5a730b32c6b0a803452b4b353" )
+      TF_SHA256="${TF_CHECKSUMS[${TF_VERSION}]}"
+      if [ -z "${TF_SHA256}" ]; then echo "FATAL: Checksum for Terraform v${TF_VERSION} is not defined." && exit 1; fi
+      
+      TOOLS_CACHE_DIR="$(Pipeline.Workspace)/.cache/tools"
+      mkdir -p ${TOOLS_CACHE_DIR}
+      export PATH=${TOOLS_CACHE_DIR}:$PATH
+
+      wget "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip" -O ${TOOLS_CACHE_DIR}/tf.zip
+      echo "${TF_SHA256}  ${TOOLS_CACHE_DIR}/tf.zip" | sha256sum -c -
+      unzip -o ${TOOLS_CACHE_DIR}/tf.zip -d ${TOOLS_CACHE_DIR} && rm ${TOOLS_CACHE_DIR}/tf.zip
+      terraform -v
+
+- task: Bash@3
+  displayName: 'Install DevSecOps & Validation Tools'
+  condition: eq('${{ parameters.setupType }}', 'full') # Only run for the 'Validate' stage
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -euo pipefail
+      echo "==> [INSTALL] Installing DevSecOps & Validation tools..."
+      export PATH=$(Pipeline.Workspace)/.cache/tools:$PATH
+      npm config set cache $(Pipeline.Workspace)/.cache/npm --global
+      npm install -g ajv-cli --cache $(Pipeline.Workspace)/.cache/npm
+      pip config set global.cache-dir $(Pipeline.Workspace)/.cache/pip
+      pip install -q awscli checkov=="${CHECKOV_VERSION:-3.2.79}" conftest
+      TFLINT_VERSION="v0.50.3"
+      TFSEC_VERSION="v1.28.1"
+      curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash -s -- "${TFLINT_VERSION}"
+      curl -L "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64" -o $(Pipeline.Workspace)/.cache/tools/tfsec && chmod +x $(Pipeline.Workspace)/.cache/tools/tfsec
+      echo "--> All DevSecOps tools installed."
+
+- task: Bash@3
+  displayName: 'Define Paths and Generate TFVars'
+  inputs:
+    targetType: 'inline'
+    script: |
+      set -euo pipefail
+      echo "==> [SETUP] Constructing and verifying common paths..."
+
+      # Dynamically construct relative paths from core variables
+      COMPOSITION_PATH="${CLOUD}/infra-stack"
+      VARS_PATH="${APP}/${CLOUD}/${ENVIRONMENT}/vars"
+      SCHEMAS_DIR_PATH="${CLOUD}/schemas"
+
+      # Define absolute paths for use in subsequent steps
+      TF_PROJECT_ROOT="$(Pipeline.Workspace)/platform"
+      COMPOSITION_PATH_ABS="${TF_PROJECT_ROOT}/$(COMPOSITION_PATH)"
+
+      # Fail fast if the main composition directory doesn't exist
+      if [ ! -d "$COMPOSITION_PATH_ABS" ]; then
+          echo "FATAL: The specified COMPOSITION_PATH does not exist: ${COMPOSITION_PATH_ABS}"
+          exit 1
+      fi
+
+      # Set all paths as pipeline variables for other tasks and stages
+      echo "##vso[task.setvariable variable=TF_PROJECT_ROOT]${TF_PROJECT_ROOT}"
+      echo "##vso[task.setvariable variable=TF_TOOLS_DIR]${TF_PROJECT_ROOT}/tools"
+      echo "##vso[task.setvariable variable=TFVARS_FILE]${TF_PROJECT_ROOT}/generated/all.tfvars.json"
+      echo "##vso[task.setvariable variable=COMPOSITION_PATH_ABS]${COMPOSITION_PATH_ABS}"
+      echo "##vso[task.setvariable variable=SCHEMAS_DIR_PATH_ABS]${TF_PROJECT_ROOT}/${SCHEMAS_DIR_PATH}"
+      echo "##vso[task.setvariable variable=VARS_PATH_ABS]$(Pipeline.Workspace)/s/$(VARS_PATH)"
+
+      echo "==> [SETUP] Generating TFVars from YAML files in $(VARS_PATH_ABS)..."
+      mkdir -p "$(dirname "$(TFVARS_FILE)")"
+      python3 "$(TF_TOOLS_DIR)/yaml2tfvars.py" "$(VARS_PATH_ABS)" "$(TFVARS_FILE)"
+      echo "--> Successfully created $(TFVARS_FILE)"

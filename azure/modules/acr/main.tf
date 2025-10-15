@@ -1,13 +1,9 @@
-# Creates one or more ECR repositories based on the 'repositories' map variable.
-resource "aws_ecr_repository" "this" {
-  for_each = var.repositories
-
-  name                 = each.value.name
-  image_tag_mutability = each.value.image_tag_mutability
-
-  image_scanning_configuration {
-    scan_on_push = each.value.scan_on_push
-  }
-
-  tags = each.value.tags
+# Creates Azure Container Registries
+resource "azurerm_container_registry" "this" {
+  for_each            = var.container_registries
+  name                = each.value.name
+  resource_group_name = var.resource_group_name
+  location            = var.location
+  sku                 = each.value.sku
+  admin_enabled       = true # Enable admin user for simple authentication scenarios
 }

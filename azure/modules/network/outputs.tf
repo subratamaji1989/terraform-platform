@@ -1,10 +1,5 @@
 # outputs.tf - Outputs from the network module
 
-output "resource_group_name" {
-  description = "The name of the created resource group."
-  value       = azurerm_resource_group.network_rg.name
-}
-
 output "vnet_id" {
   description = "The ID of the created Virtual Network."
   value       = azurerm_virtual_network.vnet.id

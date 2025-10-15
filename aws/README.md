@@ -1,20 +1,22 @@
-# 🚀 Terraform Platform Overview --AWS
+# 🚀 Terraform Platform Overview -- AWS
 
 ---
 
 ## 📑 Table of Contents
 
 1. [Introduction](#introduction)
-2. [Modules](#modules)
+2. [Infrastructure Flow (GitOps IaC)](#infrastructure-flow-gitops-iac)
+3. [Modules](#modules)
     - [Network Module](#network-module)
     - [VM Module](#vm-module)
     - [Storage Module](#storage-module)
     - [Load Balancer Module](#load-balancer-module)
-3. [Compositions](#compositions)
-4. [Schemas](#schemas)
-5. [Tools](#tools)
-6. [Pipelines](#pipelines)
-7. [Usage](#usage)
+4. [Compositions](#compositions)
+5. [Schemas](#schemas)
+6. [Tools](#tools)
+7. [Pipelines](#pipelines)
+8. [Usage](#usage)
+9. [IAM Permissions](#iam-permissions)
 
 ---
 
@@ -24,21 +26,35 @@ The Terraform Platform provides a set of reusable modules and compositions for m
 
 ---
 
+## 🌊 Infrastructure Flow (GitOps IaC)
+
+The infrastructure deployment utilizes a Code Repository for all declarative configuration, ensuring Git is the Single Source of Truth (SSOT).
+
+| Step | Component        | Tool/Service                                | Description & DevSecOps Principle                                                                                                                                                           |
+| :--- | :--------------- | :------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1.   | **Commit IaC**   | `infra-repo` Git (e.g., GitHub/CodeCommit)  | Developer commits Terraform code (for VPC, EKS, ALB) to a main branch via Pull Request (PR).                                                                                                |
+| 2.   | **Validate IaC** | CI/CD Pipeline (GitHub Actions / CodeBuild) | **IaC Scanning (Shift-Left Security):** Runs `Checkov` to scan for misconfigurations (e.g., public S3 buckets, weak Security Groups) and `TFLint` for syntax validation.                      |
+| 3.   | **Approval**     | PR Review (GitHub/CodeCommit)               | Requires a DevSecOps Architect and SRE approval to ensure security and operational best practices.                                                                                        |
+| 4.   | **Apply IaC**    | CD Tool (Terraform/Terragrunt)              | Merged PR triggers the pipeline to run `terraform apply`. The EKS cluster, its Node Groups (or Fargate profiles), and supporting services (VPC, ALB) are provisioned.                        |
+| 5.   | **Bootstrap GitOps** | Terraform / Helm                          | ArgoCD is installed into the new EKS cluster, and its configuration is pointed to the `app-manifests-repo`.                                                                             |
+
+---
+
 ## 🛠️ Modules
 
-### Network Module
+-   ### Network Module
 
 The Network module defines resources such as VPCs, subnets, and route tables. It allows for the creation and management of network infrastructure.
 
-### VM Module
+-   ### VM Module
 
 The VM module is responsible for defining EC2 instances and EBS volumes. It provides a way to manage virtual machines in the AWS environment.
 
-### Storage Module
+-   ### Storage Module
 
 The Storage module defines resources for managing S3 buckets and lifecycle rules. It facilitates the storage and retrieval of data in the cloud.
 
-### Load Balancer Module
+-   ### Load Balancer Module
 
 The Load Balancer module manages resources for Application Load Balancers (ALBs) or Network Load Balancers (NLBs). It ensures high availability and scalability for applications.
 
@@ -115,13 +131,7 @@ pipeline-parameters:
   APP: "app-ovr-infra"
   CLOUD: "aws"
   ENVIRONMENT: "dev"
-  STACK_NAME: "vm-stack"
 
-  # -- Dynamic Path Configuration --
-  COMPOSITION_PATH: "${CLOUD}/infra-stack/${STACK_NAME}"
-  SCHEMAS_DIR_PATH: "${CLOUD}/schemas"
-  VARS_PATH: "${APP}/${CLOUD}/${ENVIRONMENT}/vars"
-  BACKEND_CONFIG_PATH: "${APP}/${CLOUD}/${ENVIRONMENT}/backend.tf"
 ```
 
 The `eval` command in the build spec ensures that a variable like `COMPOSITION_PATH` is resolved at runtime, correctly substituting `${CLOUD}` and `${STACK_NAME}` with their values.
@@ -131,14 +141,191 @@ The `eval` command in the build spec ensures that a variable like `COMPOSITION_P
 ## 📖 Usage
 
 To use the Terraform Platform, clone the repository and follow the instructions in the respective module and composition README files. Ensure that you have the necessary AWS credentials and permissions to create and manage resources.
+1.  **Centralized Buildspecs (The "Templates"):**
+    -   Your `terraform-platform/aws/pipelines/buildspec.yml` and other `buildspec` files are your reusable templates. They contain the logic for installing tools, running scans, and executing Terraform commands.
 
-1.  **Define Infrastructure**: Create or select a `composition` that orchestrates the required modules (e.g., `vm-stack`).
-2.  **Configure Variables**: Add or modify the YAML variable files in the `vars` directory for your specific environment (e.g., `vars/dev/main.yml`). These variables will be passed to the modules.
-3.  **(Optional) Create a Schema**: To ensure data integrity, create a JSON schema in the `schemas` directory that validates your new YAML variables.
-4.  **Update Pipeline Configuration**: Modify the `pipeline-vars.yml` file to point to the correct `CLOUD`, `ENVIRONMENT`, and `STACK_NAME`. This tells the CI/CD pipeline what to build and deploy.
-5.  **Commit and Push**: Commit your changes to a feature branch and create a pull request.
-6.  **Automated Execution**: The CI/CD pipeline will automatically trigger, running the `VALIDATE` and `PLAN` stages. A reviewer can then approve the plan, and upon merging to the main branch, the `APPLY` stage will execute to deploy the changes.
+2.  **Pipeline Definition in `app-ovr-infra` (The "Caller"):**
+    -   You can define your pipeline using a tool like the AWS CDK or CloudFormation, or configure it via the console. The key is how you configure the CodeBuild project within your pipeline stages.
+    -   This pipeline will live in or be associated with the `app-ovr-infra` repository, as it is specific to that application's deployment lifecycle.
 
+**Example CodePipeline Stage Configuration (Conceptual):**
+
+Here is how you would configure the "Validate" stage in your CodePipeline to call the "template" `buildspec.yml` from the platform repository.
+
+-   **Action Provider:** `AWS CodeBuild`
+-   **Input Artifacts:**
+    -   `AppRepo` (from your `app-ovr-infra` source action)
+    -   `PlatformRepo` (from your `terraform-platform` source action)
+-   **Project Configuration:**
+    -   **Buildspec Location:** Point to the buildspec file inside the `PlatformRepo` input artifact.
+        -   `terraform-platform/aws/pipelines/buildspec.yml`
+    -   **Environment Variables (The "Parameters"):** This is where you pass the application-specific details to the generic template.
+
+        | Variable Name       | Value                                                | Description                                                              |
+        | ------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+        | `COMPOSITION_PATH`  | `terraform-platform/aws/infra-stack/vm-stack`        | Tells the template which infrastructure stack to build.                  |
+        | `VARS_PATH`         | `app-ovr-infra/aws/dev/vars`                         | Tells the template where to find the YAML variables for this application.|
+        | `SCHEMA_PATH`       | `terraform-platform/aws/schemas/vm.schema.json`      | Specifies the schema for validation.                                     |
+
+By using this method, you maintain a clean separation of concerns:
+-   **`terraform-platform`** owns the *how* (the build logic and templates).
+-   **`app-ovr-infra`** owns the *what* (the pipeline definition and the specific parameters for the application).
+
+This allows you to have many different application pipelines in different repositories all calling the same, centrally managed build templates, which is the core benefit of the pattern you described.
+---
+
+## 🔐 IAM Permissions
+
+To run this Terraform platform securely, especially within a CI/CD pipeline, it's crucial to follow the principle of least privilege. The pipeline should use different IAM roles for different stages.
+
+### `validate-role`
+
+This role is used during the initial validation and security scanning stages. It requires **no AWS permissions** to access infrastructure resources.
+
+-   **Permissions:**
+    -   Read access to the source code repositories (e.g., `codecommit:GitPull`).
+    -   Permissions to write logs (e.g., `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`).
+
+### `plan-role`
+
+This role is used to generate a Terraform plan. It needs read-only access to the Terraform state but no permissions to modify resources.
+
+-   **Permissions:**
+    -   All permissions from `validate-role`.
+    -   Read-only access to the Terraform state S3 bucket.
+    -   Read-only access to the DynamoDB lock table.
+
+**Example IAM Policy (`plan-policy.json`):**
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:::<YOUR_STATE_BUCKET_NAME>/path/to/terraform.tfstate"
+        },
+        {
+            "Effect": "Allow",
+            "Action": "dynamodb:GetItem",
+            "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/<YOUR_LOCK_TABLE_NAME>"
+        }
+    ]
+}
+```
+
+### `apply-role`
+
+This is the most privileged role, used to apply changes to your infrastructure. It needs permissions to read/write the Terraform state and manage the specific AWS resources defined in your modules.
+
+-   **Permissions:**
+    -   All permissions from `plan-role`.
+    -   Write access to the Terraform state S3 bucket and DynamoDB lock table.
+    -   Permissions to create, modify, and delete the resources managed by your compositions (e.g., `ec2:*`, `eks:*`, `iam:CreateRole`, `ecr:CreateRepository`).
+
+**Example IAM Policy (`apply-policy.json`):**
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "TerraformStateAndLocking",
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject"
+            ],
+            "Resource": "arn:aws:s3:::<YOUR_STATE_BUCKET_NAME>/path/to/terraform.tfstate"
+        },
+        {
+            "Sid": "TerraformLocking",
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:GetItem",
+                "dynamodb:PutItem",
+                "dynamodb:DeleteItem"
+            ],
+            "Resource": "arn:aws:dynamodb:<REGION>:<ACCOUNT_ID>:table/<YOUR_LOCK_TABLE_NAME>"
+        },
+        {
+            "Sid": "EC2NetworkAndCompute",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:Describe*",
+                "ec2:Create*",
+                "ec2:Delete*",
+                "ec2:RunInstances",
+                "ec2:TerminateInstances",
+                "ec2:AttachInternetGateway",
+                "ec2:DetachInternetGateway",
+                "ec2:AssociateRouteTable",
+                "ec2:DisassociateRouteTable",
+                "ec2:AuthorizeSecurityGroup*",
+                "ec2:RevokeSecurityGroup*"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "IAMRolesForEKS",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreateRole",
+                "iam:DeleteRole",
+                "iam:GetRole",
+                "iam:List*",
+                "iam:AttachRolePolicy",
+                "iam:DetachRolePolicy",
+                "iam:PassRole",
+                "iam:CreateServiceLinkedRole"
+            ],
+            "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/*"
+        },
+        {
+            "Sid": "EKSClusterManagement",
+            "Effect": "Allow",
+            "Action": [
+                "eks:CreateCluster",
+                "eks:DescribeCluster",
+                "eks:DeleteCluster",
+                "eks:TagResource",
+                "eks:UntagResource"
+            ],
+            "Resource": "arn:aws:eks:<REGION>:<ACCOUNT_ID>:cluster/*"
+        },
+        {
+            "Sid": "ECRRepositoryManagement",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:CreateRepository",
+                "ecr:DeleteRepository",
+                "ecr:DescribeRepositories",
+                "ecr:TagResource",
+                "ecr:ListTagsForResource",
+                "ecr:DescribeImages"
+            ],
+            "Resource": "arn:aws:ecr:<REGION>:<ACCOUNT_ID>:repository/*"
+        },
+        {
+            "Sid": "LoadBalancerManagement",
+            "Effect": "Allow",
+            "Action": "elasticloadbalancing:*",
+            "Resource": "*"
+        },
+        {
+            "Sid": "S3BucketManagement",
+            "Effect": "Allow",
+            "Action": [
+                "s3:CreateBucket",
+                "s3:DeleteBucket",
+                "s3:PutBucketTagging"
+            ],
+            "Resource": "arn:aws:s3:::*"
+        }
+    ]
+}
+
+```
+> **Note:** For production environments, it is highly recommended to scope the `Resource` ARNs to be as specific as possible rather than using `*`.
 --- 
 
 This README serves as a guide to understanding the structure and purpose of the Terraform Platform within the AWS infrastructure as code project.

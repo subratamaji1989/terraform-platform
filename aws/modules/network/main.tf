@@ -36,3 +36,51 @@ resource "aws_route" "internet_access" {
   destination_cidr_block = "0.0.0.0/0"
   gateway_id             = aws_internet_gateway.main.id
 }
+
+# Explicitly associate the main route table with each subnet.
+# This is clearer than relying on implicit association and is a best practice.
+resource "aws_route_table_association" "main" {
+  for_each       = aws_subnet.main
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.main.id
+}
+
+# --- Post-Creation Validation ---
+# The following data sources and resources are used to verify that the primary resources
+# were created successfully and are in the expected state.
+
+# Validate that the VPC is available.
+data "aws_vpc" "post_check" {
+  id = aws_vpc.main.id
+  # This ensures the check runs after the resource is created.
+  depends_on = [aws_vpc.main]
+}
+
+# Validate that the Internet Gateway is attached to the VPC.
+data "aws_internet_gateway" "post_check" {
+  internet_gateway_id = aws_internet_gateway.main.id
+  filter {
+    name   = "attachment.vpc-id"
+    values = [aws_vpc.main.id]
+  }
+  depends_on = [aws_internet_gateway.main]
+}
+
+# Re-read the route table's state after the internet route has been added.
+# This ensures the postcondition check has the most up-to-date information.
+data "aws_route_table" "post_check" {
+  route_table_id = aws_route_table.main.id
+  depends_on     = [aws_route.internet_access]
+}
+
+# Validate that the route to the Internet Gateway exists in the main route table.
+resource "null_resource" "route_validation" {
+  depends_on = [aws_route.internet_access]
+
+  lifecycle {
+    postcondition {
+      condition     = contains([for r in data.aws_route_table.post_check.routes : r.cidr_block], "0.0.0.0/0")
+      error_message = "Post-creation check failed: The 0.0.0.0/0 route was not found in the main route table."
+    }
+  }
+}

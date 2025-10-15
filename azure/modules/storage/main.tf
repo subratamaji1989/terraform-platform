@@ -1,12 +1,9 @@
-resource "aws_s3_bucket" "this" {
-  for_each = var.buckets
-  bucket   = each.value.name
-  tags     = each.value.tags
-
-  lifecycle {
-    # This value cannot be a variable. It must be a literal true or false.
-    # Set to 'true' for production buckets to prevent accidental deletion.
-    # For dev/test environments, 'false' is acceptable.
-    prevent_destroy = false
-  }
+# Creates Azure Storage Accounts
+resource "azurerm_storage_account" "this" {
+  for_each                 = var.storage_accounts
+  name                     = "${each.value.name}${var.unique_suffix}"
+  resource_group_name      = var.resource_group_name
+  location                 = var.location
+  account_tier             = each.value.account_tier
+  account_replication_type = each.value.account_replication_type
 }

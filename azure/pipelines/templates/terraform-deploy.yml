@@ -1,0 +1,132 @@
+# Reusable Azure DevOps Pipeline Template for Terraform Deployments
+# This template encapsulates the full lifecycle: Validate, Plan, and Apply.
+
+parameters:
+- name: environment
+  type: string
+  default: 'dev'
+- name: stack_name
+  type: string
+  default: 'infra-stack'
+- name: ado_service_connection
+  type: string
+- name: appName
+  type: string
+  default: 'app-ovr-infra'
+
+variables:
+  # Set pipeline variables directly from the incoming parameters.
+  CLOUD: 'azure'
+  ENVIRONMENT: '${{ parameters.environment }}'
+  APP: '${{ parameters.appName }}'
+  # Pin the Terraform version for consistency across all stages
+  TF_VERSION: '1.6.6'
+
+stages:
+# ===================================================================================
+# ==                               VALIDATE STAGE                                  ==
+# ===================================================================================
+- stage: Validate
+  displayName: 'Validate & Scan'
+  jobs:
+  - job: RunValidation
+    displayName: 'Terraform Validate & Security Scans'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - template: setup-environment.yml
+      parameters:
+        setupType: 'full' # Install all security and validation tools
+
+    - task: Bash@3
+      displayName: 'Run Schema Validation, Terraform Validate & Scans'
+      inputs:
+        targetType: 'filePath'
+        filePath: '$(TF_PROJECT_ROOT)/azure/pipelines/scripts/run-validation.sh'
+
+# ===================================================================================
+# ==                                 PLAN STAGE                                    ==
+# ===================================================================================
+- stage: Plan
+  displayName: 'Plan'
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+  - job: RunPlan
+    displayName: 'Terraform Plan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - template: setup-environment.yml
+        parameters:
+          setupType: 'minimal' # Only install core tools needed for plan
+
+      - task: CopyFiles@2
+        displayName: 'Copy Backend Config to Composition'
+        inputs:
+          SourceFolder: '$(Pipeline.Workspace)/s/$(CLOUD)/$(ENVIRONMENT)'
+          Contents: 'backend.tf'
+          TargetFolder: '$(COMPOSITION_PATH_ABS)'
+
+      - task: TerraformTaskV4@4
+        displayName: 'Terraform Init'
+        inputs:
+          provider: 'azurerm'
+          command: 'init'
+          workingDirectory: '$(COMPOSITION_PATH_ABS)'
+
+      - task: TerraformTaskV4@4
+        displayName: 'Terraform Plan'
+        inputs:
+          provider: 'azurerm'
+          command: 'plan'
+          workingDirectory: '$(COMPOSITION_PATH_ABS)'
+          commandOptions: '-var-file="$(TFVARS_FILE)" -out=tfplan'
+          environmentServiceNameAzureRM: '${{ parameters.ado_service_connection }}'
+
+      - task: PublishPipelineArtifact@1
+        displayName: 'Publish Terraform Plan'
+        inputs:
+          targetPath: '$(COMPOSITION_PATH_ABS)/tfplan'
+          artifact: 'tfplan-${{ parameters.environment }}'
+          publishLocation: 'pipeline'
+
+# ===================================================================================
+# ==                                 APPLY STAGE                                   ==
+# ===================================================================================
+- stage: Apply
+  displayName: 'Apply'
+  dependsOn: Plan
+  # This condition ensures apply only runs on the main branch
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - deployment: RunApply
+    displayName: 'Terraform Apply'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: 'terraform-azure-${{ parameters.environment }}' # e.g., terraform-azure-dev
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: none # We use artifacts, no need to checkout source again
+
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              buildType: 'current'
+              artifactName: 'tfplan-${{ parameters.environment }}'
+              targetPath: '$(Pipeline.Workspace)/plan'
+
+          - template: setup-environment.yml
+            parameters:
+              setupType: 'minimal' # Only install core tools needed for apply
+
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(Pipeline.Workspace)/plan'
+              commandOptions: '-input=false tfplan'
+              environmentServiceNameAzureRM: '${{ parameters.ado_service_connection }}'

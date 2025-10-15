@@ -1,10 +1,23 @@
-# Defines the input variables for the storage module.
+variable "resource_group_name" {
+  description = "The name of the Azure Resource Group."
+  type        = string
+}
 
-variable "buckets" {
-  description = "A map of S3 bucket configurations to create. The keys are logical names for the buckets."
+variable "location" {
+  description = "The Azure region where resources will be deployed."
+  type        = string
+}
+
+variable "storage_accounts" {
+  description = "A map of Azure Storage Account configurations."
   type = map(object({
-    name = string
-    tags = map(string)
+    name                     = string
+    account_tier             = string
+    account_replication_type = string
   }))
-  default = {}
+}
+
+variable "unique_suffix" {
+  description = "A short, random string to append to storage account names for global uniqueness."
+  type        = string
 }

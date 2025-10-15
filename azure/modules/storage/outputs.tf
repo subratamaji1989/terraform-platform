@@ -1,11 +1,4 @@
-output "bucket_names" {
-  value = { for k, v in aws_s3_bucket.this : k => v.id }
-}
-
-output "bucket_arn" {
-  value = { for k, v in aws_s3_bucket.this : k => v.arn }
-}
-
-output "bucket_domain_name" {
-  value = { for k, v in aws_s3_bucket.this : k => v.bucket_domain_name }
+output "storage_account_ids" {
+  description = "A map of the created storage account IDs."
+  value       = { for k, v in azurerm_storage_account.this : k => v.id }
 }

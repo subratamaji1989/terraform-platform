@@ -1,6 +1,4 @@
-# Module outputs for ECR.
-
-output "repository_urls" {
-  description = "A map of the created ECR repository URLs."
-  value       = { for k, v in aws_ecr_repository.this : k => v.repository_url }
+output "login_servers" {
+  description = "A map of the created container registry login server hostnames."
+  value       = { for k, v in azurerm_container_registry.this : k => v.login_server }
 }

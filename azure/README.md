@@ -1,155 +1,488 @@
-# 🚀 Terraform Platform for Azure
+* Produce Terratest sample code for CI integration tests.
+# 🚀 Terraform Platform for Azure — Enhanced DevSecOps Guide
+
+> **Target audience:** Platform Engineers, DevOps Engineers, Security Engineers, SREs
+>
+> **Purpose:** A detailed, executable, and audit-ready platform playbook. This document expands on architecture, standards, CI/CD, security controls, testing, and operational runbooks so teams can safely and repeatedly deploy Azure infrastructure as code.
 
 ---
 
-## 📑 Table of Contents
+## 📜 Table of Contents
 
-1. [Introduction](#introduction)
-2. [Modules](#modules)
-    - [Network Module](#network-module)
-    - [VM Module](#vm-module)
-    - [Storage Module](#storage-module)
-    - [Load Balancer Module](#load-balancer-module)
-3. [Compositions](#compositions)
-4. [Schemas](#schemas)
-5. [Tools](#tools)
-6. [Pipelines](#pipelines)
-7. [Usage](#usage)
-
----
-
-## 🏁 Introduction
-
-This Terraform Platform provides a set of reusable modules and compositions specifically for managing **Azure** infrastructure. This project aims to streamline the process of deploying and managing cloud resources, ensuring best practices and modularity.
-
----
-
-## 🛠️ Modules
-
-### 🌐 Network Module
-
-The Network module establishes the foundational networking infrastructure for an environment. It is designed to be modular and configurable for different network topologies.
-*   **Key Resources**: Virtual Networks (VNets), Subnets, Route Tables, Network Security Groups (NSGs), Public IP Addresses.
-*   **Features**: Supports multi-region deployments, configurable address spaces, and network security rules.
-
-### 💻 VM Module
-
-The VM module is responsible for provisioning and configuring Azure Virtual Machines. It abstracts away the complexity of instance setup, allowing for repeatable server deployments.
-*   **Key Resources**: Virtual Machines (VMs), Managed Disks, Network Interfaces (NICs), Custom Script Extensions for bootstrapping.
-*   **Features**: Configurable VM sizes, OS images, data disk management, and integration with Azure Active Directory for secure access.
-
-### 🗄️ Storage Module
-
-The Storage module provides a standardized way to create and manage Azure Storage Accounts for various purposes, such as application data, logs, or artifacts.
-*   **Key Resources**: Storage Accounts, Blob Containers, File Shares, Access Policies, Lifecycle Management.
-*   **Features**: Secure-by-default configurations, automated cost optimization via lifecycle rules, and support for different storage tiers.
-
-### ⚖️ Load Balancer Module
-
-The Load Balancer module manages traffic distribution to ensure high availability and scalability for applications.
-*   **Key Resources**: Azure Application Gateways, Azure Load Balancers, Public IP Addresses, Backend Pools, Health Probes.
-*   **Features**: Support for different listener types (HTTP/HTTPS), integration with Azure Key Vault for SSL/TLS certificates, and configurable health check parameters.
+1.  **Executive Summary** (Objectives & Scope)
+2.  **Platform Design Principles**
+3.  **Two-Repository Model** (Repo Contracts)
+4.  **Module Design Standards** (Structure, I/O, Naming, Testing)
+5.  **Compositions & Patterns** (Topologies & Wiring)
+6.  **Schemas & Validation** (JSON Schema, AJV)
+7.  **CI/CD Engine (Azure DevOps)** (Pipeline Design & Secure Auth)
+8.  **Security & Governance** (RBAC, WIF/OIDC, Key Vault)
+9.  **Terraform State Management** (Backend Hardening)
+10. **Policy-as-Code** (Runtime Guardrails)
+11. **Testing Strategy** (Unit, Integration, Policy, E2E)
+12. **Observability & Auditing**
+13. **Developer Experience (DX)** (Self-Service)
+14. **Operational Playbooks** (Restore, Rollbacks, Drift)
+15. **Governance & Onboarding**
+16. **Appendix** (Snippets & Templates)
 
 ---
 
-## 🏗️ Compositions
+## 1. Executive Summary
 
-Compositions are the top-level infrastructure definitions that assemble reusable modules into a complete, deployable stack (e.g., a `vm-stack` that combines the `network`, `vm`, and `load-balancer` modules).
-*   **Why it's needed**: Compositions allow you to define a complete environment by orchestrating modules, promoting reuse and preventing configuration drift. They represent the "what to build," while modules represent the "how to build it."
-*   **Usage**: A developer defines a new stack by creating a directory under `compositions/`. Inside, a `main.tf` file calls the necessary modules and passes variables to them. The CI/CD pipeline targets a specific composition using the `COMPOSITION_PATH` variable defined in `pipeline-vars.yml`.
+This guide codifies a mature, secure, and repeatable Terraform platform for Azure. It standardizes how modules are authored, validated, tested, versioned, released, and consumed by application teams. It enforces security and compliance through shift-left validation (schemas, linting, static scanning), policy-as-code, secretless authentication, and runtime guardrails.
 
----
+### Key Outcomes
 
-## 📜 Schemas
-
-The `schemas` directory contains JSON Schema files used to validate the structure and data types of your YAML variable files.
-*   **Why it's needed**: Schemas enforce a contract for your configuration, catching errors like typos, incorrect data types, or missing required fields *before* Terraform runs. This "shift-left" approach to validation prevents simple configuration mistakes from causing a pipeline failure during the `plan` or `apply` stage.
-*   **Usage**: For a given YAML file (e.g., `vm-stack.yml`), you create a corresponding `vm-stack.schema.json` file. The `buildspec.yml` automatically uses the `ajv-cli` tool during the `VALIDATE` stage to check that the YAML file conforms to its schema.
-*   **Reference**: This is implemented in the `validate_yaml_files` function within the `build` phase of the `buildspec.yml`.
+*   ✅ **Safe Self-Service:** Empower application teams to provision infrastructure independently.
+*   🛡️ **Centralized Security:** Enforce compliance and security controls from a single point.
+*   🔄 **Repeatable CI/CD:** Deliver infrastructure changes with a full audit trail and minimized blast radius.
+*   🔍 **Observable & Recoverable:** Ensure the entire infrastructure lifecycle is observable and recoverable.
 
 ---
 
-## 🛠️ Tools
+## 2. Platform Design Principles
 
-This directory contains helper scripts that provide "glue" logic for the CI/CD pipeline.
-*   **`yaml2tfvars.py`**: A Python script that merges a directory of YAML variable files into a single `all.tfvars.json` file.
-*   **Why it's needed**: This tool bridges the gap between human-friendly YAML (which supports comments and a cleaner structure) and Terraform's required JSON format for variable files (`-var-file`). It allows developers to manage configuration in a more readable format.
-*   **Usage**: The script is called automatically by the `buildspec.yml` during the `build` phase before any `terraform` commands are run.
+*   🔐 **Least Privilege by Default**: Every identity, role, and permission is scoped to the smallest necessary boundary.
+*   🏗️ **Immutable Infrastructure**: All changes are made via code, reviewed, and deployed through automation. No manual "click-ops".
+*   📚 **Single Source of Truth**: Git is the definitive source for all infrastructure definitions, enforced with signed commits and PR reviews.
+*   ⬅️ **Shift-Left Security**: Validate schemas, run static analysis, and apply policy checks *before* code is merged.
+*   🧩 **Composability & Reusability**: Build with small, focused modules that are wired together by larger compositions.
+*   🗺️ **Discoverability**: Document all modules and compositions with examples, inputs, outputs, and required permissions.
+*   📊 **Observability & Auditability**: Capture telemetry, logs, and state audit trails for every deployment.
 
 ---
 
-## 🔄 CI/CD with Azure Pipelines
+## 3. Two-Repository Model — Extended
 
-The `pipelines` directory contains the YAML definition (`azure-pipelines.yml`) for the CI/CD pipeline, designed to run in **Azure Pipelines**. This pipeline is a flexible, multi-stage engine for validating and deploying Terraform infrastructure on Azure.
+The platform is built on a decoupled, two-repository model to enforce separation of concerns between the platform itself and the applications that consume it.
 
-### Key Features
+### `terraform-platform` (The Platform Repo)
 
--   **Dynamic Configuration**: The pipeline's behavior is controlled by a `pipeline-vars.yml` file and **Variable Groups** in Azure DevOps. This allows the same pipeline definition to be used for multiple environments and stacks.
--   **Staged Execution**: The pipeline is broken into distinct stages (`Validate`, `Plan`, `Apply`) for granular control and manual approvals between stages.
-    -   `VALIDATE`: Performs schema validation, security scans, and a dry-run `terraform plan`.
-    -   `PLAN`: Initializes the backend and generates a production `terraform plan`.
-    -   `APPLY`: Applies a previously generated plan file.
--   **Automated Tooling**: A setup step automatically downloads and caches specific versions of `terraform`, `tflint`, `tfsec`, and other dependencies, ensuring a consistent and fast execution environment.
--   **Integrated Security (DevSecOps)**: During the `VALIDATE` stage, the pipeline automatically runs `tflint` and `tfsec` to scan the Terraform code for misconfigurations and security vulnerabilities.
--   **Schema Validation**: Before running Terraform, the pipeline uses `ajv-cli` to validate the `.yml` variable files against their corresponding JSON schemas. This "shift-left" approach prevents invalid configurations from ever reaching the plan stage.
+*   **Owner**: Platform Engineering / Cloud CoE
+*   **Contains**:
+    *   `modules/`: Reusable, versioned, and tested building blocks.
+    *   `compositions/`: Opinionated stacks that combine modules into deployable solutions.
+    *   `schemas/`: JSON Schemas for validating all supported composition inputs.
+    *   `pipelines/`: Reusable Azure DevOps pipeline templates.
+    *   `examples/`: Reference implementations for `app-ovr-infra`.
+    *   `docs/`: Auto-generated documentation for modules.
+    *   `tests/`: Unit and integration tests for all modules.
+*   **Versioning**: Platform changes are released via Git tags (e.g., `v1.2.0`) with a corresponding `CHANGELOG.md`.
 
-### Pipeline Stages Explained
+### `app-ovr-infra` (The Application Infra Repo)
 
-1.  **Validate Stage**:
-    -   Runs on every pull request.
-    -   Installs tools, validates YAML schemas, runs `terraform init`, `terraform validate`, and security scans.
-    -   This stage ensures code quality and security before it can be merged.
+*   **Owner**: Application Team
+*   **Contains**:
+    *   `vars/`: YAML variable files organized by environment (`dev`, `prod`).
+    *   `backend.tf`: Backend configuration pointing to the application's unique state file.
+    *   `pipeline-vars.yml`: Parameters consumed by the shared CI/CD pipeline.
+*   **Constraints**:
+    *   Must reference approved module versions from `terraform-platform` (via a private registry or Git tags).
+    *   No raw Terraform resources or manual `az cli` commands are permitted without an explicit exception.
 
-2.  **Plan Stage**:
-    -   Runs after a pull request is merged to the main branch.
-    -   Initializes Terraform with the Azure backend.
-    -   Generates a `terraform plan` and publishes the plan file as a pipeline artifact.
-    -   This stage often includes a manual approval step before proceeding to `Apply`.
+### Contract Requirements (Enforced by CI)
 
-3.  **Apply Stage**:
-    -   Runs after the `Plan` stage is approved.
-    -   Downloads the plan artifact from the `Plan` stage.
-    -   Executes `terraform apply` using the plan file to deploy the infrastructure to Azure.
+*   The `app-ovr-infra` repo **must** include a `pipeline-vars.yml`.
+*   All `vars/*.yml` files **must** be validated against a corresponding schema from the `terraform-platform` repo.
 
-### How Variables are Loaded
+---
 
-In Azure Pipelines, variables are managed through a combination of `pipeline-vars.yml` and **Variable Groups**.
+## 4. Module Design Standards (Detailed)
 
-1.  **Variable Groups**: Secure values like the Azure Service Principal credentials (`ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, etc.) are stored in a linked Variable Group in Azure DevOps.
-2.  **YAML Parsing**: The pipeline uses a script step with `yq` to parse the `pipeline-vars.yml` file and export its keys as pipeline variables. This allows for dynamic configuration based on the committed file.
+Each module is a small, focused unit of work. Treat modules as internal packages with a public API (`variables.tf`, `outputs.tf`) and a private implementation (`main.tf`).
 
-An example `pipeline-vars.yml` might look like this:
-
-```yaml
-pipeline-parameters:
-  # -- Infrastructure Definition --
-  APP: "app-ovr-infra"
-  CLOUD: "azure"
-  ENVIRONMENT: "dev"
-  STACK_NAME: "vm-stack"
-
-  # -- Dynamic Path Configuration --
-  COMPOSITION_PATH: "${CLOUD}/infra-stack/${STACK_NAME}"
-  SCHEMAS_DIR_PATH: "${CLOUD}/schemas"
-  VARS_PATH: "${APP}/${CLOUD}/${ENVIRONMENT}/vars"
-  BACKEND_CONFIG_PATH: "${APP}/${CLOUD}/${ENVIRONMENT}/backend.tf"
+**Module Layout**:
+```plaintext
+modules/<module-name>/
+├── README.md          # Purpose, example usage, required permissions
+├── main.tf            # Core resource blocks
+├── variables.tf       # Documented input variables with types and validation
+├── outputs.tf         # Documented outputs for wiring
+├── versions.tf        # Provider and Terraform version constraints
+└── examples/
+    └── basic/         # A minimal, working example
 ```
 
-The `eval` command in the build spec ensures that a variable like `COMPOSITION_PATH` is resolved at runtime, correctly substituting `${CLOUD}` and `${STACK_NAME}` with their values.
+**Input Standards (`variables.tf`)**:
+*   Use explicit types (`string`, `number`, `list(...)`) and `validation` blocks.
+*   Avoid generic `object` types; prefer typed objects with clear `description`.
+*   Provide a `default` only when it's safe; otherwise, make variables required.
+*   Mark sensitive inputs with `sensitive = true`.
+
+**Output Standards (`outputs.tf`)**:
+*   Output resource IDs, not raw connection strings or secrets.
+*   Mark sensitive outputs with `sensitive = true`.
+
+**Naming & Tagging**:
+*   Enforce a consistent naming convention via module locals (e.g., `{org}-{app}-{env}-{component}-{region}`).
+*   Modules **must** attach a standard set of tags: `owner`, `environment`, `cost_center`, `created_by_pipeline`, `module_version`.
+
+**Permissions**:
+*   The module's `README.md` must document the minimal RBAC permissions required (e.g., `Microsoft.Network/virtualNetworks/write`).
+
+**Versioning & Releases**:
+*   Follow Semantic Versioning (`MAJOR.MINOR.PATCH`).
+*   Publish modules to a private Terraform registry or reference them by an immutable Git tag.
+
+**Testing**:
+*   **Integration Tests**: Deploy to a short-lived sandbox subscription using Terratest or a similar framework.
+*   **Security Scans**: Run `tfsec` and `checkov` on all module code.
 
 ---
 
-## 📖 Usage
+## 5. Compositions & Patterns
 
-To use the Terraform Platform for Azure, clone the repository and follow the instructions below. Ensure that you have an Azure Service Principal with the necessary permissions to create and manage resources in your subscription.
+**Compositions** are opinionated, production-ready stacks that wire modules together to form a complete solution.
 
-1.  **Define Infrastructure**: Create or select a `composition` that orchestrates the required modules (e.g., `vm-stack`).
-2.  **Configure Variables**: Add or modify the YAML variable files in the `vars` directory for your specific environment (e.g., `vars/dev/main.yml`). These variables will be passed to the modules.
-3.  **(Optional) Create a Schema**: To ensure data integrity, create a JSON schema in the `schemas` directory that validates your new YAML variables.
-4.  **Update Pipeline Configuration**: Modify the `pipeline-vars.yml` file to point to the correct `CLOUD`, `ENVIRONMENT`, and `STACK_NAME`. This tells the CI/CD pipeline what to build and deploy.
-5.  **Commit and Push**: Commit your changes to a feature branch and create a pull request.
-6.  **Automated Execution**: The CI/CD pipeline will automatically trigger, running the `VALIDATE` and `PLAN` stages. A reviewer can then approve the plan, and upon merging to the main branch, the `APPLY` stage will execute to deploy the changes.
+**Common Patterns**:
+*   `infra-stack`: `network` + `subnet` + `nsg` + `vm` + `log-analytics` + `aks` + `managed-identity` + `key-vault` + `ingress-controller` + `app-service-plan` + `app-service`
 
---- 
+**Wiring Rules**:
+*   Use explicit module outputs for wiring. Never reference resource addresses directly across modules.
+*   Keep composition inputs minimal. Prefer composition-level defaults that can be overridden by `vars/` files.
 
-This README serves as a guide to understanding the structure and purpose of the Terraform Platform within the **Azure** infrastructure as code project.
+---
+
+## 6. Schemas & Validation
+
+**Goal**: Prevent typos, invalid enums, prohibited VM sizes, and missing tags. Fail fast during PR validation.
+
+**Implementation**:
+*   JSON Schema files are stored in `terraform-platform/schemas/`.
+*   A CI pipeline step uses `ajv-cli` to validate every `vars/*.yml` file against its corresponding schema.
+
+**Example**:
+*   **`app-ovr-infra/vars/vm.yml`** (Developer Input)
+    ```yaml
+    vms:
+      - name: "web-server-01"
+        size: "Standard_B2s" # Allowed size
+    ```
+*   **`terraform-platform/schemas/vm.schema.json`** (Validation Rule)
+    ```json
+    {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "vms": {
+          "type": "array",
+          "items": {
+            "properties": {
+              "size": {
+                "type": "string",
+                "enum": ["Standard_B1s", "Standard_B2s", "Standard_D2s_v3"]
+              }
+            },
+            "required": ["name", "size"]
+          }
+        }
+      }
+    }
+    ```
+
+---
+
+## 7. CI/CD Engine — Azure DevOps (Detailed Pipeline)
+
+The platform provides a reusable Azure Pipelines template that each `app-ovr-infra` repository references.
+
+**Pipeline Stages**:
+
+1.  **`Validate-PR`** (Runs on Pull Requests)
+    *   **Install Tools**: `terraform`, `tflint`, `tfsec`, `ajv-cli`, `infracost`.
+    *   **Schema Validation**: Runs `ajv-cli` against `vars/` files.
+    *   **Static Analysis**: `terraform fmt -check`, `terraform validate`, `tflint`, `tfsec`.
+    *   **Dry Run Plan**: Runs `terraform init -backend=false` and `terraform plan` to validate logic.
+    *   **Publish Results**: Attaches validation results and security reports to the PR.
+
+2.  **`Plan`** (Runs on merge to `main`)
+    *   **Authenticate**: Acquires credentials via Workload Identity Federation.
+    *   **Initialize Backend**: Runs `terraform init` with the remote state backend.
+    *   **Generate Plan**: Runs `terraform plan -out=tfplan` and `infracost` to estimate cost changes.
+    *   **Publish Artifacts**: Publishes the `tfplan` file and cost report for approval.
+
+3.  **`Approval`** (Manual gate for production)
+    *   Uses Azure DevOps `Approvals and checks` to require sign-off.
+    *   Approvers review the plan summary, security report, and cost delta.
+
+4.  **`Apply`** (Runs after approval)
+    *   **Authenticate & Download**: Acquires credentials and downloads the `tfplan` artifact.
+    *   **Execute**: Runs `terraform apply -auto-approve tfplan`.
+    *   **Post-Deploy**: Runs automated smoke tests to verify deployment health.
+
+**Pipeline Security**:
+*   **Authentication**: Use **Workload Identity Federation (OIDC)** to avoid storing client secrets.
+*   **Secrets**: Use Azure Key Vault-backed Variable Groups for any necessary secrets.
+*   **Agents**: Use Microsoft-hosted agents or hardened, ephemeral self-hosted agents.
+
+---
+
+## 7.1 CI/CD Setup: From Authentication to Pipeline
+
+This section provides a step-by-step guide for setting up the necessary authentication and configuring the Azure DevOps pipeline.
+
+### Step 1: Create the Pipeline's Identity (App Registration & Service Principal)
+
+The pipeline needs an identity in Microsoft Entra ID to interact with your Azure subscription. This is called a Service Principal.
+
+1.  **Log in to Azure CLI**:
+    ```bash
+    az login
+    ```
+
+2.  **Set your Subscription**:
+    ```bash
+    az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
+    ```
+
+3.  **Create the App Registration and Service Principal**:
+    Give it a descriptive name, like `sp-tf-platform-prod`.
+    ```bash
+    # Create the App Registration
+    APP_ID=$(az ad app create --display-name "sp-tf-platform-prod" --query appId -o tsv)
+
+    # Create the Service Principal for the App
+    SP_OBJECT_ID=$(az ad sp create --id $APP_ID --query id -o tsv)
+
+    echo "Service Principal App ID (Client ID): $APP_ID"
+    ```
+
+4.  **Assign Permissions**:
+    Grant the Service Principal the `Contributor` role on the scope it needs to manage (e.g., a specific Resource Group). Using a Resource Group scope is more secure than Subscription scope.
+    ```bash
+    az role assignment create \
+      --assignee $APP_ID \
+      --role "Contributor" \
+      --scope "/subscriptions/<YOUR_SUBSCRIPTION_ID>/resourceGroups/<YOUR_TARGET_RESOURCE_GROUP>"
+    ```
+
+### Step 2: Configure the Service Connection in Azure DevOps (WIF/OIDC)
+
+Next, you'll create a **Service Connection** in Azure DevOps. This allows your pipeline to authenticate as the Service Principal you just created. We will use the recommended **Workload Identity Federation** method, which is secret-less.
+
+1.  **Create the Federated Credential**:
+    This command tells Azure to trust tokens coming from your specific Azure DevOps pipeline.
+    ```bash
+    # Get your ADO organization name and project name
+    ADO_ORG_NAME="YourADOOrganization"
+    ADO_PROJECT_NAME="YourADOProject"
+    REPO_NAME="app-ovr-infra" # The name of your application infra repo
+
+    # Create the trust relationship
+    az ad app federated-credential create \
+      --id $APP_ID \
+      --parameters '{"name":"ado-federation-main","issuer":"https://vstoken.azure.com/<ADO_ORG_ID>","subject":"repo:'"$ADO_ORG_NAME/$ADO_PROJECT_NAME/$REPO_NAME"':refs/heads/main","audiences":["api://AzureADTokenExchange"]}'
+    ```
+    > **Note**: The `subject` is highly specific. This example trusts tokens only from the `main` branch of the `app-ovr-infra` repository.
+
+2.  **Create the Service Connection in the UI**:
+    *   Navigate to your Azure DevOps project: **Project Settings** > **Service connections** (under Pipelines).
+    *   Click **New service connection**.
+    *   Select **Azure Resource Manager**.
+    *   For the authentication method, choose **Workload Identity federation (automatic)**.
+    *   Follow the prompts. Azure DevOps will detect the App Registration you created. Select it to complete the connection.
+    *   Give the connection a memorable name, like `Azure-Prod-Federated`. You will use this name in your pipeline YAML.
+
+### Step 3: Create and Run the Pipeline
+
+Finally, create the pipeline in Azure DevOps that will consume your `app-ovr-infra` repository and use the Service Connection.
+
+1.  **Navigate to Pipelines**: In your ADO project, go to the **Pipelines** section and click **New pipeline**.
+2.  **Select Repository**: Choose the location of your `app-ovr-infra` repository (e.g., Azure Repos Git or GitHub).
+3.  **Configure**: Select **Existing Azure Pipelines YAML file**.
+4.  **Path**: Point it to the `azure-pipelines.yml` file within your `app-ovr-infra` repository.
+
+Your `app-ovr-infra/azure-pipelines.yml` should look similar to the one in the Appendix, which uses a template from the `terraform-platform` repo. The key is passing the name of the service connection you created:
+
+```yaml
+# In app-ovr-infra/azure-pipelines.yml
+
+...
+stages:
+- stage: Validate_and_Plan
+  displayName: 'Validate and Plan'
+  jobs:
+  - template: pipelines/templates/terraform-deploy.yml@platform # Reference the template
+    parameters:
+      environment: 'dev'
+      stack_name: 'infra-stack'
+      # This is the crucial link to your Service Connection
+      ado_service_connection: 'Azure-Dev-Federated'
+```
+
+Once you save and run the pipeline, it will use the `Azure-Dev-Federated` service connection to authenticate with Azure via WIF/OIDC and execute the Terraform commands defined in the template.
+
+---
+
+## 8. Security & Governance Model (very detailed)
+
+### 8.1 Authentication & Workload Identity Federation (WIF/OIDC)
+
+This is the **recommended** secret-less authentication method.
+
+**Setup**:
+1.  Create an App Registration and Service Principal in Microsoft Entra ID.
+2.  Create a Federated Credential that maps the Azure DevOps pipeline (by org, project, repo, and branch) to the App Registration.
+3.  Configure an Azure DevOps Service Connection to use the federated credential.
+
+**Sample `az cli` command**:
+```bash
+# This command establishes trust between Entra ID and a specific ADO pipeline branch
+az ad app federated-credential create \
+  --id <APP_ID> \
+  --parameters '{"name":"ado-federation-main","issuer":"https://vstoken.azure.com/<ADO_ORG_ID>","subject":"repo:<ADO_ORG_NAME>/<PROJECT_NAME>/<REPO_NAME>:refs/heads/main","audiences":["api://AzureADTokenExchange"]}'
+```
+> **Note**: The exact `subject` format may vary. Always follow the latest Azure DevOps documentation.
+
+### 8.2 RBAC & Least Privilege
+
+*   Assign roles at the most granular scope possible (e.g., Resource Group, not Subscription).
+*   Create custom roles with only the required actions instead of using the built-in `Contributor` role.
+*   Document the roles and rationale for elevated privileges required by each composition.
+
+### 8.3 Key Vault & Secrets
+
+*   Modules should create Key Vaults with `soft-delete` and `purge-protection` enabled by default.
+*   Applications should use a **Managed Identity** to access secrets from Key Vault at runtime.
+*   Reference secrets in App Services or other PaaS offerings directly, avoiding injection at deploy time.
+
+**Example (App Service setting)**:
+```terraform
+resource "azurerm_linux_web_app" "main" {
+  # ...
+  identity {
+    type = "SystemAssigned"
+  }
+
+  app_settings = {
+    # This special syntax tells the App Service to fetch the secret at runtime
+    "DB_PASSWORD" = "@Microsoft.KeyVault(SecretUri=${azurerm_key_vault_secret.db_password.id})"
+  }
+}
+```
+
+---
+
+## 9. Terraform State Management & Backend Hardening
+
+*   **Storage**: Use an Azure Storage Account with a dedicated container.
+*   **Security**:
+    *   Enable `versioning` and `blob soft delete` to protect against accidental deletion.
+    *   Restrict network access using a `private endpoint`.
+    *   Use a Managed Identity (via WIF) for pipeline access instead of storage account keys.
+*   **Isolation**:
+    *   Each environment and stack **must** have a unique `key` in the backend (e.g., `app-ovr-infra/dev/infra-stack.tfstate`).
+    *   Use separate storage accounts for `prod` vs. `non-prod` for maximum blast radius reduction.
+*   **Locking**: The `azurerm` backend handles state locking automatically. Ensure pipelines can handle lock contention gracefully.
+
+---
+
+## 10. Policy-as-Code & Runtime Guardrails
+
+**Enforcement Layers**:
+*   **Pre-Merge (Static)**: Linting (`tflint`), schema validation (`ajv`), and static analysis (`tfsec`, `checkov`).
+*   **Pre-Apply (Dynamic)**: Policy checks against the plan file using Open Policy Agent (`OPA`/`Conftest`).
+*   **Runtime (Cloud)**: **Azure Policy** and Initiative assignments to block non-compliant resource creation at the source.
+
+**Example Check**: Fail the pipeline if a resource is being created with a public IP in a production environment.
+
+---
+
+## 11. Testing Strategy
+
+*   **Unit Testing**: Static checks, `terraform validate`, and local plan file analysis.
+*   **Integration Testing**: Use **Terratest** (Go) to spin up a short-lived environment in a sandbox subscription, validate its resources, and tear it down.
+*   **Policy Testing**: Maintain a test suite that runs policies against sample "good" and "bad" plan files to assert expected outcomes.
+*   **Security Testing**: Integrate `tfsec`, `checkov`, and `tflint` with custom rulesets into the `Validate-PR` stage.
+*   **Cost Testing**: Run `infracost` in the `Plan` stage and fail the build if the cost delta exceeds a configurable threshold.
+
+---
+
+## 12. Observability, Audit & Incident Response
+
+*   **Telemetry**: Send platform pipeline logs to a central Log Analytics Workspace.
+*   **Diagnostics**: Enable `Activity Logs` and `Diagnostic Settings` on all management resources (storage account, key vault, etc.).
+*   **Alerting**: Configure alerts for critical policy violations, failed `apply` stages, or unexpected infrastructure drift.
+*   **Incident Runbooks**: Maintain documented steps for handling plan/apply failures, state corruption, and rollbacks.
+
+---
+
+## 13. Developer Experience (DX) & Self-service
+
+*   **CLI Helpers**: Provide a `scripts/bootstrap.sh` script to set up a local environment (install tools, log in, etc.).
+*   **Templates**: Offer a skeleton `app-ovr-infra` repository containing the required file structure (`vars/`, `backend.tf`, etc.).
+*   **Documentation**: Auto-generate module documentation (inputs/outputs) with `terraform-docs` on each release and publish to an internal catalog.
+
+---
+
+## 14. Operational Playbooks
+
+### 14.1 Failed Apply / Rollback
+1.  **Investigate**: Do not re-run `terraform apply`. Analyze pipeline logs and the failed plan.
+2.  **Remediate**: If partial resources were deployed, use `terraform state rm` to remove them from state or run `terraform destroy` in a controlled manner.
+3.  **Rollback**: To roll back, revert the Git commit and run a new plan/apply cycle to remove the unwanted resources.
+
+### 14.2 State Corruption Recovery
+1.  **Restore**: Use blob versioning and soft-delete to retrieve the last known good state file.
+2.  **Verify**: Restore the `.tfstate` file to the backend container and run `terraform plan` to validate the recovery.
+
+### 14.3 Drift Detection & Remediation
+1.  **Detect**: Use scheduled pipelines that run `terraform plan` and alert on any non-empty plan for production resources.
+2.  **Remediate**: For unauthorized drift, create a PR to bring the code back in line with the plan. For authorized emergency changes, update the code to match reality and document the change.
+
+---
+
+## 15. Governance Checklist & Onboarding
+
+**Checklist for onboarding a new application team**:
+*   [ ] Create `app-ovr-infra` repository from the official template.
+*   [ ] Assign owners and a `cost_center` tag.
+*   [ ] Configure `backend.tf` with a unique state key for each environment.
+*   [ ] Create the Azure DevOps pipeline and connect it to the federated service connection.
+*   [ ] Run a sample `Validate-PR` and fix any schema or policy violations.
+*   [ ] Publish team-specific runbooks and SLOs.
+
+---
+
+## 16. Appendix — Snippets & Templates
+
+### Azure Storage Backend (`backend.tf`)
+```terraform
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "rg-terraform-state-prod"
+    storage_account_name = "tfstateacmeprod"
+    container_name       = "tfstate"
+    key                  = "app-ovr-infra/prod/infra-stack.tfstate" # Unique key per env/stack
+  }
+}
+```
+
+### Minimal `azure-pipelines.yml` Reference
+```yaml
+# In app-ovr-infra/azure-pipelines.yml
+
+trigger:
+  branches:
+    include:
+    - main
+
+resources:
+  repositories:
+  - repository: platform # Alias for the platform repo
+    type: github
+    name: YourOrg/terraform-platform
+    ref: main # Or a specific tag/release
+
+stages:
+- stage: Validate_and_Plan
+  displayName: 'Validate and Plan'
+  jobs:
+  - template: pipelines/templates/terraform-deploy.yml@platform # Call the template
+    parameters:
+      environment: 'dev'
+      stack_name: 'infra-stack'
+      ado_service_connection: 'Azure-Dev-Federated'
+```
+
+---

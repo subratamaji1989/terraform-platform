@@ -8,10 +8,12 @@ variable "location" {
   type        = string
 }
 
-variable "container_registries" {
-  description = "A map of Azure Container Registry configurations."
+variable "apim_services" {
+  description = "A map of API Management service configurations."
   type = map(object({
-    name = string
-    sku  = string
+    name            = string
+    publisher_name  = string
+    publisher_email = string
+    sku_name        = string
   }))
 }

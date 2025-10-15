@@ -7,8 +7,6 @@ env:
     TF_VERSION: "1.6.6"
     TFLINT_VERSION: "v0.50.3"
     TFSEC_VERSION: "v1.28.1"
-    # Path to pipeline variables file (this is expected to exist in your source or in a prior artifact)
-    # PIPELINE_VARS_PATH: "app-ovr-infra/aws/${ENV}/pipeline-vars.yml"
 
 phases:
   install:
@@ -17,17 +15,6 @@ phases:
       nodejs: 16
     commands:
       - |
-        install_yq() {
-          echo "==> [INSTALL] Installing yq (if needed)..."
-          if command -v yq >/dev/null 2>&1; then
-            echo "--> yq already installed."
-            return
-          fi
-          local yq_version="v4.40.5"
-          wget -q "https://github.com/mikefarah/yq/releases/download/${yq_version}/yq_linux_amd64" -O .local/bin/yq
-          chmod +x .local/bin/yq
-        }
-
         # --- Helper Functions for Tool Installation ---
         install_terraform() {
           echo "==> [INSTALL] Installing Terraform v${TF_VERSION} (if needed)..."
@@ -62,15 +49,6 @@ phases:
         export PATH="$(pwd)/.local/bin:$PATH"
         echo "PATH=${PATH}"
 
-        install_yq
-
-        echo "==> [INSTALL] Loading pipeline variables from ${PIPELINE_VARS_PATH}..."
-        if [ -f "${PIPELINE_VARS_PATH}" ]; then
-          eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
-        else
-          echo "--> WARNING: ${PIPELINE_VARS_PATH} not found. Continuing with defaults and existing env vars."
-        fi
-
         echo "==> [INSTALL] Installing base dependencies..."
         pip install --upgrade pip -q pyyaml awscli || true
         npm config set prefix "$(pwd)/.local"
@@ -89,14 +67,18 @@ phases:
       - |
         echo "==> [PRE_BUILD] Re-sourcing environment for build phase..."
         export PATH="$(pwd)/.local/bin:$PATH"
-        if [ -f "${PIPELINE_VARS_PATH}" ]; then
-          eval "$(yq e '.pipeline-parameters | to_entries | .[] | "export " + .key + "=" + (.value | @sh)' "${PIPELINE_VARS_PATH}")"
-          echo "--> Printing loaded pipeline variables for verification:"
-          yq e '.pipeline-parameters | keys | .[]' "${PIPELINE_VARS_PATH}" | while IFS= read -r key; do
-            eval "value=\$$key"
-            printf "  %s: %s\n" "$key" "$value"
-          done
+
+        # Validate that required environment variables are passed from the CI/CD system
+        if [ -z "${APP}" ] || [ -z "${CLOUD}" ] || [ -z "${ENVIRONMENT}" ] || [ -z "${PIPELINE_STAGE}" ]; then
+          echo "FATAL: Build aborted. Required values are not passed."
+          echo "Please ensure the following environment variables are set in your CodeBuild project:"
+          echo "  - PIPELINE_STAGE (e.g., PLAN, APPLY, VALIDATE)"
+          echo "  - APP (e.g., app-ovr-infra)"
+          echo "  - CLOUD (e.g., aws)"
+          echo "  - ENVIRONMENT (e.g., dev)"
+          exit 1
         fi
+        echo "--> Required environment variables (APP, CLOUD, ENVIRONMENT) are present."
 
   build:
     commands:
@@ -106,17 +88,17 @@ phases:
 
         PROJECT_ROOT="$(pwd)"
 
-        # Construct all paths using the variables loaded from pipeline-vars.yml
-        COMPOSITION_PATH="${PROJECT_ROOT}/${CLOUD}/infra-stack/${STACK_NAME}"
+        # Construct all paths using the environment variables
+        COMPOSITION_PATH="${PROJECT_ROOT}/${CLOUD}/infra-stack"
         SCHEMAS_DIR_PATH="${PROJECT_ROOT}/${CLOUD}/schemas"
         VARS_PATH="${PROJECT_ROOT}/../${APP}/${CLOUD}/${ENVIRONMENT}/vars"
         BACKEND_CONFIG_PATH="${PROJECT_ROOT}/../${APP}/${CLOUD}/${ENVIRONMENT}/backend.tf"
         TFVARS_FILE="${PROJECT_ROOT}/generated/all.tfvars.json"
-        TOOLS_PATH="${PROJECT_ROOT}/aws/tools"
+        TOOLS_PATH="${PROJECT_ROOT}/${CLOUD}/tools"
 
         if [ ! -d "${COMPOSITION_PATH}" ]; then
           echo "FATAL: The specified COMPOSITION_PATH does not exist or is not a directory: ${COMPOSITION_PATH}"
-          echo "       Please check the CLOUD and STACK_NAME variables in your pipeline-vars.yml file."
+          echo "       Please check the CLOUD and ENVIRONMENT variables."
           exit 1
         fi
       - echo "--> Merging variable YAML files into ${TFVARS_FILE}..."

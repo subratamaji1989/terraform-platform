@@ -1,19 +1,11 @@
 # main.tf - Defines the network resources for Azure
 
-# Create a resource group to hold all network-related resources.
-# A resource group is a container that holds related resources for an Azure solution.
-resource "azurerm_resource_group" "network_rg" {
-  name     = var.resource_group_name
-  location = var.location
-  tags     = var.tags
-}
-
 # Create the Virtual Network (VNet).
 # This is the fundamental building block for your private network in Azure.
 resource "azurerm_virtual_network" "vnet" {
   name                = var.vnet_name
-  location            = azurerm_resource_group.network_rg.location
-  resource_group_name = azurerm_resource_group.network_rg.name
+  location            = var.location
+  resource_group_name = var.resource_group_name
   address_space       = var.vnet_address_space
   tags                = var.tags
 }
@@ -24,7 +16,7 @@ resource "azurerm_virtual_network" "vnet" {
 resource "azurerm_subnet" "subnets" {
   for_each             = var.subnets
   name                 = each.value.name
-  resource_group_name  = azurerm_resource_group.network_rg.name
+  resource_group_name  = var.resource_group_name
   virtual_network_name = azurerm_virtual_network.vnet.name
   address_prefixes     = each.value.address_prefixes
 }
