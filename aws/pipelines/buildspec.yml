@@ -155,7 +155,7 @@ phases:
 
           echo "==> [BUILD] Executing PLAN stage..."
           terraform init -backend-config="${BACKEND_CONFIG_PATH}" -reconfigure -input=false
-          terraform plan -var-file="${TFVARS_FILE}" -out=tfplan
+          terraform plan -var-file="${TFVARS_FILE}" -out=${PROJECT_ROOT}/tfplan
           terraform show -json tfplan > plan.json
         fi
 
